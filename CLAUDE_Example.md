@@ -13,6 +13,7 @@
 
 - **Backend**: Spring Boot 3.x + Java 21, Maven Multi-Module
 - **Frontend**: React 18 + Vite + Tailwind CSS + TypeScript
+- **Service Discovery**: Spring Cloud Netflix Eureka (eureka-server port 8761, all services auto-register)
 - **Messaging**: Apache Kafka (Saga Pattern, Outbox Pattern)
 - **Databases**: PostgreSQL (per service) · Redis · MongoDB · Elasticsearch
 - **Payment**: Bank Transfer + QR Code — user scans bank QR → uploads proof screenshot → STAFF confirms manually (no 3rd-party payment API required)
@@ -29,7 +30,8 @@
 
 | Layer | Technology | Spring Module | Notes |
 |---|---|---|---|
-| API Gateway | Spring Cloud Gateway | `spring-cloud-starter-gateway` | JWT filter, rate limit, routing, circuit breaker |
+| Service Discovery | Spring Cloud Netflix Eureka | `spring-cloud-starter-netflix-eureka-server` / `-client` | `eureka-server` (port 8761) · all services auto-register · Gateway routes via `lb://service-name` |
+| API Gateway | Spring Cloud Gateway | `spring-cloud-starter-gateway` | JWT filter, rate limit, routing via Eureka `lb://`, circuit breaker |
 | REST API | Spring Web MVC | `spring-boot-starter-web` | Controllers, DTO, Bean Validation |
 | Database ORM | Spring Data JPA + Hibernate | `spring-boot-starter-data-jpa` | Entity, Repository, `created_at`/`updated_at` auditing |
 | Security | Spring Security + JWT + OAuth2 | `spring-boot-starter-security`, `spring-boot-starter-oauth2-client` | Auth, RBAC, JWT (15m access / 30d refresh HttpOnly cookie), Google OAuth |
@@ -70,7 +72,8 @@
 badminton-hub/
 ├── pom.xml                    # Parent POM (Java 21, Spring Boot 3.2.x, spring-cloud 2023.x)
 ├── common/                    # Shared DTOs, exceptions, utils, audit base entity
-├── api-gateway/               # Spring Cloud Gateway — JWT filter, rate limiting, circuit breaker, routing
+├── eureka-server/             # Spring Cloud Netflix Eureka — service registry (port 8761)
+├── api-gateway/               # Spring Cloud Gateway — JWT filter, rate limiting, circuit breaker, lb:// routing via Eureka
 ├── user-service/              # Auth (JWT + OAuth2 Google), Profile, Refresh Token, Email Verify, Forgot Password
 ├── court-service/             # Court catalog, time slots, slot auto-gen scheduler, court reviews, Cloudinary upload, geo search
 ├── booking-service/           # Reservations, distributed lock, idempotency, cancellation policy
@@ -79,8 +82,9 @@ badminton-hub/
 ├── payment-service/           # Bank QR + proof upload + STAFF manual confirm + manual refund
 ├── escrow-service/            # Escrow: hold court_price, reimburse Host per join, settle Court Owner on COMPLETED
 ├── notification-service/      # Kafka consumers, MongoDB templates, SendGrid email, FCM push, DLQ
-├── ai-service/                # RAG, schedule recommendations, chatbot
-├── docker-compose.yml         # PostgreSQL x8, Redis, MongoDB, Kafka, Zookeeper, Zipkin
+├── event-service/             # Social/competitive events, ticket sales, event_db (port 3009)
+├── ai-service/                # RAG, schedule recommendations, chatbot (port 3010)
+├── docker-compose.yml         # PostgreSQL x9, Redis, MongoDB, Kafka, Zookeeper, Zipkin, Eureka
 └── frontend/                  # React 18 + Vite
     └── src/
         ├── api/               # axiosClient.ts — Axios + JWT interceptor + silent refresh
@@ -102,7 +106,7 @@ badminton-hub/
 ```yaml
 spring:
   application:
-    name: booking-service
+    name: booking-service          # MUST match Eureka registration name
   datasource:
     url: jdbc:postgresql://localhost:5432/booking_db
     username: ${DB_USER}
@@ -118,6 +122,85 @@ spring:
       port: 6379
 server:
   port: 3003
+
+# Eureka client config — required on every service except eureka-server itself
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    prefer-ip-address: true        # Use IP instead of hostname (important in Docker)
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+```
+
+### `eureka-server` `application.yml`
+
+```yaml
+spring:
+  application:
+    name: eureka-server
+server:
+  port: 8761
+eureka:
+  client:
+    register-with-eureka: false    # Server does not register itself
+    fetch-registry: false
+  server:
+    wait-time-in-ms-when-sync-empty: 0
+    enable-self-preservation: false  # Disable in dev; enable in prod
+```
+
+### API Gateway routes (Eureka `lb://` load-balanced)
+
+```yaml
+# api-gateway application.yml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: user-service
+          uri: lb://user-service        # Eureka resolves to actual instance IP:port
+          predicates:
+            - Path=/api/auth/**, /api/users/**
+        - id: court-service
+          uri: lb://court-service
+          predicates:
+            - Path=/api/courts/**, /api/events/**
+        - id: booking-service
+          uri: lb://booking-service
+          predicates:
+            - Path=/api/bookings/**
+        - id: matchmaking-service
+          uri: lb://matchmaking-service
+          predicates:
+            - Path=/api/matches/**
+        - id: payment-service
+          uri: lb://payment-service
+          predicates:
+            - Path=/api/payments/**, /api/bank-accounts/**
+        - id: escrow-service
+          uri: lb://escrow-service
+          predicates:
+            - Path=/api/escrow/**
+        - id: coach-service
+          uri: lb://coach-service
+          predicates:
+            - Path=/api/coaches/**
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/notifications/**
+        - id: event-service
+          uri: lb://event-service
+          predicates:
+            - Path=/api/events/**
+        - id: ai-service
+          uri: lb://ai-service
+          predicates:
+            - Path=/api/ai/**
 ```
 
 ### Frontend `.env`
@@ -131,16 +214,18 @@ VITE_WS_URL=http://localhost:3004        # matchmaking-service Socket.io
 
 | Service | Port | Notes |
 |---|---|---|
-| api-gateway | 3000 | Circuit breaker + granular rate limiting |
+| eureka-server | 8761 | Service registry — dashboard at http://localhost:8761 |
+| api-gateway | 3000 | Circuit breaker + granular rate limiting + Eureka `lb://` routing |
 | user-service | 3001 | JWT + Refresh Token + OAuth2 + Email Verify + Forgot PW |
 | court-service | 3002 | Slot auto-gen + Cloudinary upload + Court reviews + Geo search |
 | booking-service | 3003 | Cancellation policy + Audit log |
 | matchmaking-service | 3004 | Saga + Outbox + Socket.io + Waiting list |
 | coach-service | 3005 | Elasticsearch + Enrollment payment |
-| payment-service | 3006 | VNPay charge + real Refund API + Receipt email |
+| payment-service | 3006 | Bank QR + Proof upload + STAFF manual confirm + Manual refund |
 | escrow-service | 3007 | Hold / reimburse / settle / refund |
 | notification-service | 3008 | SendGrid + FCM + DLQ + Read-status |
-| ai-service | 3009 | RAG chatbot |
+| event-service | 3009 | Social/competitive events · Ticket sales |
+| ai-service | 3010 | RAG chatbot |
 
 ---
 
@@ -633,8 +718,8 @@ public void onSlotConfirmed(SlotConfirmedEvent event) {
 #### Google OAuth2 Login
 > Add Google OAuth to `user-service`. Add `google_id VARCHAR(255) UNIQUE`, `auth_provider VARCHAR(20) DEFAULT 'LOCAL'` to `users` table. `password_hash` becomes nullable. Implement `POST /api/auth/google Body: { idToken }`: verify Google ID token via Google's tokeninfo endpoint → upsert user (match on email) → issue JWT + Refresh Token. Configure `spring-boot-starter-oauth2-client` with client-id and client-secret from Google Cloud Console.
 
-#### VNPay Real Refund API
-> Implement real VNPay refund in `payment-service` `RefundService.processVNPayRefund(transactionId, amount, reason)`. Call VNPay Refund API endpoint (`vnp_Command=refund`) with HMAC-SHA512 signature. Add `vnpay_refund_id VARCHAR(255)`, `refund_amount DECIMAL`, `refunded_at TIMESTAMP` to `payments` table. On success: update `payments.status=REFUNDED`. On failure: retry 3 times via Resilience4j → if still failing, create STAFF alert notification. Show full HMAC construction and API call.
+#### Manual Refund Flow (Bank Transfer)
+> Implement manual refund in `payment-service`. `POST /api/payments/{id}/refund` (STAFF/ADMIN only): body `{ amount, toBankName, toAccountNumber, toAccountName, refundNote }`. Insert into `manual_refunds` table. Update `payments.status = REFUNDED`, set `payments.refund_amount`. Publish Kafka event `payment.refund.processed` → notification-service notifies user. Add `GET /api/payments/{id}/refund` to retrieve refund record. Show full `RefundController`, `ManualRefundService`, and JUnit 5 test for duplicate refund guard (a REFUNDED payment must reject a second refund attempt with 409).
 
 ---
 
@@ -669,7 +754,7 @@ public void onSlotConfirmed(SlotConfirmedEvent event) {
 > Implement court reviews in `court-service`. Create `court_reviews` table: `court_id`, `user_id`, `booking_id UNIQUE`, `rating SMALLINT (1–5)`, `comment`, `created_at`. Add `rating DECIMAL(3,2)` and `total_reviews INT` to `courts` table. `POST /api/courts/{id}/reviews`: validate user has a COMPLETED booking for this court (1 review per booking). On save: recalculate `courts.rating` average. `GET /api/courts/{id}/reviews?page=0&size=10`. Show JPA query for average calculation.
 
 #### Coach Enrollment with Payment
-> Add payment to `coach-service` enrollment flow. `POST /api/coaches/{id}/enroll` → returns `{ enrollmentId, paymentUrl }` (VNPay). VNPay callback → update `coach_enrollments.status=CONFIRMED`, record `payment_id` and `total_paid`. On cancel: call refund API per cancellation policy. `PATCH /api/coaches/{id}/enrollments/{enrollId}/cancel`. Add `payment_id UUID`, `total_paid DECIMAL`, `cancelled_at TIMESTAMP` to `coach_enrollments` table.
+> Add payment to `coach-service` enrollment flow. `POST /api/coaches/{id}/enroll` → calls `payment-service` to create PENDING payment → returns `{ enrollmentId, paymentId, orderCode, bankName, accountNumber, qrImageUrl, expiresAt }` (Bank QR screen). STAFF confirms proof → `payment.status=CONFIRMED` → Kafka `payment.player.confirmed` → `coach_enrollments.status=CONFIRMED`, set `payment_id` and `total_paid`. On cancel: STAFF records manual refund per cancellation policy. `PATCH /api/coaches/{id}/enrollments/{enrollId}/cancel`. Show `EnrollmentService` with idempotency guard.
 
 #### Notification Read Status
 > Add read/unread status to `notification-service`. Add `is_read BOOL DEFAULT FALSE` and `read_at TIMESTAMP` to `notification_history` MongoDB collection. Endpoints: `GET /api/notifications?isRead=false&page=0&size=20` (returns unread count in header `X-Unread-Count`), `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`. Frontend: show badge count via `useNotifications()` hook polling every 30s (or via Socket.io event push).
@@ -678,7 +763,23 @@ public void onSlotConfirmed(SlotConfirmedEvent event) {
 > Add geo search to `court-service`. Add `latitude DECIMAL(9,6)` and `longitude DECIMAL(9,6)` to `courts` table. Create `PostGIS` extension or use earth distance formula via `ll_to_earth`. `GET /api/courts?lat=10.7769&lng=106.7009&radius=5000` (radius in meters) → sort by distance ASC, return `distanceMeters` field in response. Frontend: add "Tìm sân gần tôi" button using `navigator.geolocation.getCurrentPosition()`.
 
 #### Admin Dashboard UI
-> Create `AdminPage.tsx` in React 18 + TypeScript + Tailwind CSS. Route: `/admin` (protected, `ROLE_STAFF` or `ROLE_ADMIN`). Left sidebar nav: Users, Courts, Bookings, Matches, Coaches, Payments. Each section: data table with search, sort, pagination (`page`, `size` params). Actions per section: Users (assign role, soft delete), Courts (create, edit, generate slots), Bookings (force cancel + issue refund), Matches (force close), Coaches (approve, suspend), Payments (view VNPay refund status). Use `react-hot-toast` for action feedback.
+> Create `AdminPage.tsx` in React 18 + TypeScript + Tailwind CSS. Route: `/admin` (protected, `ROLE_STAFF` or `ROLE_ADMIN`). Left sidebar nav: Users, Courts, Bookings, Matches, Coaches, Payments. Each section: data table with search, sort, pagination (`page`, `size` params). Actions per section: Users (assign role, soft delete), Courts (create, edit, generate slots), Bookings (force cancel + issue refund), Matches (force close), Coaches (approve, suspend), Payments (proof review queue, confirm/reject, record manual bank refund). Use `react-hot-toast` for action feedback.
+
+---
+
+### 🟢 INFRASTRUCTURE — Service Discovery (Eureka)
+
+#### Bootstrap Eureka Server
+> Create `eureka-server` Maven module. Add `spring-cloud-starter-netflix-eureka-server` dependency. Main class: `@SpringBootApplication @EnableEurekaServer`. `application.yml`: `server.port=8761`, `eureka.client.register-with-eureka=false`, `eureka.client.fetch-registry=false`, `eureka.server.enable-self-preservation=false`. Add `spring-boot-starter-actuator` for health endpoint. Show complete module structure including `pom.xml` inheriting from parent. Verify at http://localhost:8761.
+
+#### Register All Services with Eureka
+> Add `spring-cloud-starter-netflix-eureka-client` to each service's `pom.xml` (user, court, booking, matchmaking, payment, escrow, coach, notification, event, ai). In each `application.yml` add: `eureka.client.service-url.defaultZone=http://localhost:8761/eureka/`, `eureka.instance.prefer-ip-address=true`, `eureka.instance.lease-renewal-interval-in-seconds=10`. No `@EnableDiscoveryClient` annotation needed (Spring Boot auto-configures). Show a single service's full config as the reference template.
+
+#### API Gateway Load-Balanced Routing via Eureka
+> Configure `api-gateway` to route using Eureka `lb://` URIs instead of hardcoded `http://localhost:PORT`. Replace all static `uri:` entries in `application.yml` routes with `uri: lb://service-name` (where `service-name` matches `spring.application.name` of the target service). Add `spring-cloud-starter-netflix-eureka-client` to gateway's `pom.xml`. Add `@LoadBalanced` to `WebClient.Builder` bean if used. Show complete gateway `application.yml` with all 10 service routes.
+
+#### Eureka in Docker Compose
+> Add `eureka-server` container to `docker-compose.yml`. Service name: `eureka-server`, image: build from `./eureka-server`, ports: `8761:8761`, healthcheck: `curl -f http://localhost:8761/actuator/health`. Update all other service containers to add env var `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://eureka-server:8761/eureka/` and `depends_on: eureka-server`. Show the full relevant docker-compose snippet.
 
 ---
 
@@ -706,10 +807,10 @@ public void onSlotConfirmed(SlotConfirmedEvent event) {
 > Implement `escrow-service` `EscrowService.reimburseHost(escrowId, playerId, pricePerPerson)`. Triggered by `booking.slot.confirmed` Kafka event. Create `EscrowTransaction` (type=PLAYER_REIMBURSEMENT). Credit `pricePerPerson` to Host wallet. Publish `escrow.host.reimbursed` event for notification.
 
 #### Escrow Service — Court Owner Settlement
-> Implement `escrow-service` `EscrowService.settleCourtOwner(matchId)`. Triggered by `match.completed` Kafka event. Release full `court_price` to Court Owner. Update `EscrowAccount.status = SETTLED`. Include Resilience4j retry for VNPay transfer failure.
+> Implement `escrow-service` `EscrowService.settleCourtOwner(matchId)`. Triggered by `match.completed` Kafka event. Log `COURT_OWNER_SETTLEMENT` `EscrowTransaction`. Update `EscrowAccount.status = SETTLED`. Publish `payment.refund.queued` Kafka event → notification-service alerts STAFF to manually transfer `court_price` to Court Owner's bank account. Include `@Transactional` + idempotency guard. Show full service + test.
 
 #### Escrow Service — Refund on Cancel
-> Implement `escrow-service` `EscrowService.refundAll(matchId)`. Triggered by `match.cancelled`. For each Player: refund 100% via real VNPay Refund API. For Host: refund `court_price − Σ(reimbursements)`. Write individual `EscrowTransaction` records. Update `EscrowAccount.status = REFUNDED`.
+> Implement `escrow-service` `EscrowService.refundAll(matchId)`. Triggered by `match.cancelled`. For each Player: log `PLAYER_REFUND` `EscrowTransaction`. For Host: log `HOST_REFUND` for `court_price − Σ(reimbursements)`. Update `EscrowAccount.status = REFUNDED`. Publish `payment.refund.queued` events → STAFF sees refund action queue in `/admin/payments` and manually executes bank transfers + records in `manual_refunds`. Write individual `EscrowTransaction` records.
 
 #### Create Match with Prepay + Slot Lock
 > Implement `matchmaking-service` `MatchService.createMatch(hostId, request)`. Steps: (1) Acquire Redis lock `lock:slot:{slotId}:match_create` TTL 15 min; (2) Create match `status=PENDING_PAYMENT`, snapshot `court_price`; (3) Save `OutboxEvent` in same `@Transactional`; (4) Return `{ matchId, paymentUrl }`. On `match.host.payment.confirmed`: `status=OPEN`, Host auto-joins (`filled_slots=1`), reserve slot, release Redis lock.
@@ -718,10 +819,10 @@ public void onSlotConfirmed(SlotConfirmedEvent event) {
 > Create `MatchDetailPage.tsx`. Display match info, skill badge, price/person, host info, participant avatars, real-time slot counter (Socket.io). If Host is viewing: show `"💰 Đã đặt cọc 400,000 VND · Đã hoàn: X VND"` from `/api/matches/:id/escrow-summary`. Show Join Match button if slot available + user not joined + `is_email_verified=true`. On click: call `joinMutation`, show loading, handle success/error with `react-hot-toast`.
 
 #### React CreateMatchModal (Prepay)
-> Create `CreateMatchModal.tsx`. Fields: court search, date + time slot (timeline grid), sport type, match format, skill level, `total_slots` (2/4/6/8), `price_per_person` (auto-suggest = `court_price ÷ total_slots`). Show live cost summary: `"💰 Bạn cần đặt cọc: X VND · Hoàn lại: Y VND/người join"`. Warn if `price_per_person × total_slots < court_price`. On submit: redirect to VNPay for full `court_price` payment.
+> Create `CreateMatchModal.tsx`. Fields: court search, date + time slot (timeline grid), sport type, match format, skill level, `total_slots` (2/4/6/8), `price_per_person` (auto-suggest = `court_price ÷ total_slots`). Show live cost summary: `"💰 Bạn cần đặt cọc: X VND · Hoàn lại: Y VND/người join"`. Warn if `price_per_person × total_slots < court_price`. On submit: call `POST /api/matches` → redirect to Bank QR payment screen (show bank info + QR image + countdown 10 min + proof upload zone).
 
 #### Write All Tests (booking-service)
-> Write complete JUnit 5 tests for `booking-service` `BookingService` and `CancellationPolicyService`. Test: successful booking (slot available), slot already reserved (409), distributed lock timeout, DB save failure triggers compensating event, cancellation >24h (100% refund), cancellation 2–24h (50% refund), cancellation <2h (0% refund). Use `@ExtendWith(MockitoExtension.class)` and mock VNPay refund calls.
+> Write complete JUnit 5 tests for `booking-service` `BookingService` and `CancellationPolicyService`. Test: successful booking (slot available), slot already reserved (409), distributed lock timeout, DB save failure triggers compensating event, cancellation >24h (100% refund), cancellation 2–24h (50% refund), cancellation <2h (0% refund). Use `@ExtendWith(MockitoExtension.class)` and mock manual refund service calls.
 
 ---
 
@@ -733,10 +834,11 @@ public void onSlotConfirmed(SlotConfirmedEvent event) {
 
 | Priority | Task | Effort |
 |---|---|---|
+| 🟢 I-00 | Eureka Server + all services register + Gateway `lb://` routing | 0.5 day |
 | 🔴 C-01 | Refresh Token (15m access / 30d HttpOnly cookie) | 1 day |
 | 🔴 C-02 | Email Verification (`is_email_verified`, SendGrid link) | 1 day |
 | 🔴 C-03 | Forgot / Reset Password (Redis token TTL 1h) | 0.5 day |
-| 🔴 C-04 | VNPay Refund API real integration (`vnp_Command=refund`) | 2 days |
+| 🔴 C-04 | Manual Refund flow (Bank Transfer — `manual_refunds` table + STAFF queue) | 0.5 day |
 | 🔴 C-05 | Cancellation Policy for Court Booking (time-based refund) | 0.5 day |
 | 🔴 C-06 | Slot Lock on Match Create (Redis TTL 15min during Host payment) | 0.5 day |
 
@@ -744,7 +846,7 @@ public void onSlotConfirmed(SlotConfirmedEvent event) {
 
 | Week | Focus | Services | Goal |
 |---|---|---|---|
-| **Week 1** | Scaffold + User (with OAuth, Refresh Token, Email Verify) + Court + Gateway | `user`, `court`, `api-gateway` | Auth + OAuth working |
+| **Week 1** | Scaffold + **Eureka Server** + User (with OAuth, Refresh Token, Email Verify) + Court + Gateway (`lb://` routing) | `eureka-server`, `user`, `court`, `api-gateway` | Service discovery + Auth + OAuth working |
 | **Week 2** | Booking (cancellation policy) + Matchmaking (Prepay + Escrow + Outbox) | `booking`, `matchmaking`, `escrow` | Join match + lock + escrow |
 | **Week 3** | Payment (real refund) + Notification (SendGrid + FCM) + Kafka full flow | `payment`, `notification` | End-to-end payment + real notifications |
 | **Week 4** | Saga robustness (Timeout + Zombie + DLQ + Redis fallback) + Slot Auto-Gen + Cloudinary | `matchmaking`, `booking`, `court` | All failure cases + file upload |
@@ -753,7 +855,7 @@ public void onSlotConfirmed(SlotConfirmedEvent event) {
 
 | Week | Focus | Services | Goal |
 |---|---|---|---|
-| **Week 5** | Coach (enrollment with payment) + AI Service + Audit Log | `coach`, `ai-service` | Coach search + coach payment + chatbot |
+| **Week 5** | Coach (enrollment with payment) + Event Service (ticket sales) + AI Service + Audit Log | `coach`, `event-service`, `ai-service` | Coach search + coach payment + event tickets + chatbot |
 | **Week 6** | Court Reviews + Geo Search + Notification Read Status + Waiting List | `court`, `notification`, `matchmaking` | Medium priority features |
 | **Week 7** | Google OAuth + Granular Rate Limiting + Distributed Tracing (Zipkin) | `user`, `api-gateway` | Security + observability |
 
@@ -992,7 +1094,8 @@ GET  /api/events/:eventId
 POST /api/events/:eventId/tickets
      Body: { quantity: 1 }
      → Purchase ticket(s) — checks availability, initiates payment
-     → Returns { ticketId, paymentUrl } for VNPay redirect
+     → Returns { ticketId, paymentId, orderCode, bankName, accountNumber, qrImageUrl, expiresAt }
+     → Frontend shows Bank QR payment screen; STAFF confirms proof
 
 GET  /api/events/:eventId/my-tickets
      → User's purchased tickets for this event (requires auth)
@@ -1043,8 +1146,8 @@ BOOKING    BOOKING
    │         │
    │         ├─ Browse event list (week filter)
    │         ├─ View event detail (ℹ️)
-   │         └─ Purchase ticket → Payment (VNPay)
-   │                   │
+   │         └─ Purchase ticket → Bank QR Payment
+   │                   │         (upload proof → STAFF confirm)
    ▼                   │
 Select courts          │
 + time slots           │
@@ -1054,7 +1157,8 @@ on timeline grid       │
 [TIẾP THEO]      CONFIRMED TICKET
    │              (email + push notification)
    ▼
-Payment (VNPay)
+Bank QR Payment
+(upload proof → STAFF confirm)
    │
    ▼
 CONFIRMED BOOKING
@@ -1116,4 +1220,4 @@ claude                  # Start Claude Code session
 ```
 
 ### Initial Claude Code Scaffold Prompt
-> Create a Maven multi-module Spring Boot 3.x project for BadmintonHub. Parent `pom.xml` with Java 21, Spring Boot 3.2.x, `spring-cloud 2023.x` BOM. Modules: `common`, `api-gateway`, `user-service`, `court-service`, `booking-service`, `matchmaking-service`, `coach-service`, `payment-service`, `notification-service`, `ai-service`. Each service: `spring-boot-starter-web`, `spring-boot-starter-data-jpa`, `spring-kafka`, postgresql driver, lombok, `spring-boot-starter-test`. Add `docker-compose.yml` with: PostgreSQL 15 (5 separate databases for each service), Redis 7, MongoDB 7, Kafka 3.6, Zookeeper. Add `.gitignore` for Maven.
+> Create a Maven multi-module Spring Boot 3.x project for BadmintonHub. Parent `pom.xml` with Java 21, Spring Boot 3.2.x, `spring-cloud 2023.x` BOM. Modules: `common`, `eureka-server`, `api-gateway`, `user-service`, `court-service`, `booking-service`, `matchmaking-service`, `coach-service`, `payment-service`, `escrow-service`, `notification-service`, `event-service`, `ai-service`. `eureka-server`: add only `spring-cloud-starter-netflix-eureka-server` + `spring-boot-starter-actuator`, annotate main class `@EnableEurekaServer`, port 8761. All other services (except `common`): `spring-boot-starter-web`, `spring-boot-starter-data-jpa`, `spring-cloud-starter-netflix-eureka-client`, `spring-kafka`, postgresql driver, lombok, `spring-boot-starter-test`. `api-gateway`: replace web with `spring-cloud-starter-gateway`, add `spring-cloud-starter-netflix-eureka-client`, configure routes via `lb://service-name`. Add `docker-compose.yml` with: PostgreSQL 15 (9 separate databases), Redis 7, MongoDB 7, Kafka 3.6, Zookeeper, Zipkin, and `eureka-server` container (built from `./eureka-server`, `depends_on` for all services). Add `.gitignore` for Maven.
