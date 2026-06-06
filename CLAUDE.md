@@ -24,6 +24,40 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 
 ---
 
+## Session Progress
+
+> Phần này được cập nhật tự động bằng lệnh `/handoff` cuối mỗi phiên làm việc.
+
+**Cập nhật lần cuối**: 2026-06-06
+
+### ✅ Đã hoàn thành
+- Setup CLAUDE.md với rules index và quick reference
+- Tạo 10 rule files trong `.claude/rules/` (architecture, payment, java-spring, database, kafka-patterns, redis-patterns, eureka-config, rbac-security, resilience, frontend)
+- Tạo `IMPLEMENTATION_GUIDE.md` — kế hoạch 4 tuần từ scratch đến complete
+- Tạo `.claude/commands/handoff.md` — slash command để bàn giao phiên
+
+### 🔄 Đang làm
+- _(chưa bắt đầu implement — chuẩn bị bắt đầu Week 1)_
+
+### 📋 Việc tiếp theo (theo thứ tự ưu tiên)
+1. **Day 1** — Tạo parent `pom.xml` + 13 module scaffold + `docker-compose.yml`
+2. **Day 2** — `common` module (BaseAuditEntity, ErrorResponse) + `eureka-server`
+3. **Day 3** — `api-gateway` (JWT filter, rate limit, lb:// routes)
+4. **Day 4** — `user-service` auth core (register, email verify, login, JWT)
+5. **Day 5** — `user-service` OAuth2 + profile + `court-service` scaffold
+
+### 🧠 Quyết định kỹ thuật đã chốt
+- Payment: Bank QR + STAFF manual confirm — **không dùng VNPay hay bất kỳ payment gateway nào**
+- Service discovery: Spring Cloud Netflix Eureka, tất cả route qua `lb://` trong Gateway
+- Cross-service refs: UUID only, không có FK constraint cross-database
+- Outbox Pattern: chỉ dùng trong `matchmaking-service`
+- Idempotency guard (`processed_events`): `booking-service` và `escrow-service`
+
+### 💬 Claude đã làm trong phiên này
+Phiên setup ban đầu: đọc toàn bộ .md files của project, thêm eureka-server vào kiến trúc, tạo CLAUDE.md (index rules), tạo 10 rule files theo Claude Code spec, tạo IMPLEMENTATION_GUIDE.md 4 tuần, setup handoff workflow.
+
+---
+
 ## Quick Reference
 
 ```bash
