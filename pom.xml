@@ -40,6 +40,7 @@
         <lombok.version>1.18.32</lombok.version>
         <mapstruct.version>1.5.5.Final</mapstruct.version>
         <lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
+        <spring-dotenv.version>3.0.0</spring-dotenv.version>
     </properties>
 
     <dependencyManagement>
@@ -58,6 +59,13 @@
                 <groupId>com.badmintonhub</groupId>
                 <artifactId>common</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <!-- spring-dotenv: load .env file into Spring Environment -->
+            <dependency>
+                <groupId>me.paulschwarz</groupId>
+                <artifactId>spring-dotenv</artifactId>
+                <version>${spring-dotenv.version}</version>
             </dependency>
 
             <!-- Lombok -->
@@ -81,6 +89,15 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <!-- Inherited by all child modules — loads .env file at Spring Boot startup -->
+    <dependencies>
+        <dependency>
+            <groupId>me.paulschwarz</groupId>
+            <artifactId>spring-dotenv</artifactId>
+            <version>${spring-dotenv.version}</version>
+        </dependency>
+    </dependencies>
 
     <build>
         <pluginManagement>

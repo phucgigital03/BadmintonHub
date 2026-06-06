@@ -2,9 +2,9 @@ spring:
   application:
     name: court-service
   datasource:
-    url: jdbc:postgresql://localhost:5433/court_db
-    username: postgres
-    password: postgres
+    url: ${DB_COURT_URL:jdbc:postgresql://localhost:5433/court_db}
+    username: ${POSTGRES_USERNAME:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
@@ -15,10 +15,10 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
   data:
     redis:
-      host: localhost
-      port: 6379
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
       group-id: court-service
       auto-offset-reset: earliest
@@ -34,7 +34,7 @@ server:
 eureka:
   client:
     service-url:
-      defaultZone: http://localhost:8761/eureka/
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
     register-with-eureka: true
     fetch-registry: true
   instance:
