@@ -1,0 +1,70 @@
+spring:
+  application:
+    name: api-gateway
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  cloud:
+    gateway:
+      routes:
+        - id: user-service
+          uri: lb://user-service
+          predicates:
+            - Path=/api/auth/**, /api/users/**, /api/upload/**
+        - id: court-service
+          uri: lb://court-service
+          predicates:
+            - Path=/api/courts/**
+        - id: booking-service
+          uri: lb://booking-service
+          predicates:
+            - Path=/api/bookings/**
+        - id: matchmaking-service
+          uri: lb://matchmaking-service
+          predicates:
+            - Path=/api/matches/**
+        - id: payment-service
+          uri: lb://payment-service
+          predicates:
+            - Path=/api/payments/**, /api/bank-accounts/**
+        - id: escrow-service
+          uri: lb://escrow-service
+          predicates:
+            - Path=/api/escrow/**
+        - id: coach-service
+          uri: lb://coach-service
+          predicates:
+            - Path=/api/coaches/**
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/notifications/**
+        - id: event-service
+          uri: lb://event-service
+          predicates:
+            - Path=/api/events/**
+        - id: ai-service
+          uri: lb://ai-service
+          predicates:
+            - Path=/api/ai/**
+
+server:
+  port: 3000
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
