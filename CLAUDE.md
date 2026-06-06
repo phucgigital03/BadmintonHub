@@ -28,7 +28,7 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 
 > Phần này được cập nhật tự động bằng lệnh `/handoff` cuối mỗi phiên làm việc.
 
-**Cập nhật lần cuối**: 2026-06-06 22:55
+**Cập nhật lần cuối**: 2026-06-06 23:45
 
 ### ✅ Đã hoàn thành
 - Setup CLAUDE.md với rules index và quick reference
@@ -41,17 +41,23 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 - Viết lại `.gitignore` professional (Maven, Spring Boot, IDE, secrets, logs, frontend, Docker)
 - Purge build artifacts khỏi git history bằng `git filter-repo` + force push thành công
 - Fix lỗi startup `notification-service` và `ai-service`: thêm `autoconfigure.exclude` cho DataSourceAutoConfiguration + HibernateJpaAutoConfiguration
+- **Environment setup HOÀN THÀNH** — tạo đầy đủ `.env` / `.env.example` + `frontend/.env` / `frontend/.env.example`
+  - Thêm `spring-dotenv 3.0.0` vào parent `pom.xml` — tất cả 13 module kế thừa tự động
+  - Update 11 `application.yml` → dùng `${VAR:default}` syntax (infra có default, secrets fail fast)
+  - `mvn clean install -DskipTests` sau khi thêm dotenv → BUILD SUCCESS (14/14 modules)
+  - `.env` gitignored, `.env.example` sẵn sàng commit
 
 ### 🔄 Đang làm
-- Day 1 verification: tất cả services đã start được, Eureka dashboard hiển thị đủ instances
-- `pkill -f "spring-boot:run"` để dừng tất cả services
+- Người dùng đã điền `JWT_SECRET` thật vào `.env`
+- Còn cần điền: `GOOGLE_CLIENT_ID/SECRET`, `SENDGRID_API_KEY`, `CLOUDINARY_*`, `OPENAI_API_KEY`, `FCM_SERVER_KEY`
 
 ### 📋 Việc tiếp theo (theo thứ tự ưu tiên)
-1. **Day 2** — `common` module (BaseAuditEntity, ErrorResponse, ApiException, PageResponse, GlobalExceptionHandler) + `eureka-server` full → verify http://localhost:8761
-2. **Day 3** — `api-gateway` JWT filter + Redis blacklist check + RateLimitFilter
-3. **Day 4** — `user-service` auth core (register, email verify, login, refresh token, logout)
-4. **Day 5** — `user-service` OAuth2 Google + profile endpoints + `court-service` scaffold
-5. **Day 6+** — theo IMPLEMENTATION_GUIDE.md
+1. **Hoàn thiện `.env`** — điền credentials thật: Google OAuth2, SendGrid, Cloudinary, OpenAI, FCM
+2. **Day 2** — `common` module (BaseAuditEntity, ErrorResponse, ApiException, PageResponse, GlobalExceptionHandler) + `eureka-server` full → verify http://localhost:8761
+3. **Day 3** — `api-gateway` JWT filter + Redis blacklist check + RateLimitFilter
+4. **Day 4** — `user-service` auth core (register, email verify, login, refresh token, logout)
+5. **Day 5** — `user-service` OAuth2 Google + profile endpoints + `court-service` scaffold
+6. **Day 6+** — theo IMPLEMENTATION_GUIDE.md
 
 ### 🧠 Quyết định kỹ thuật đã chốt
 - Payment: Bank QR + STAFF manual confirm — **không dùng VNPay hay bất kỳ payment gateway nào**
@@ -61,9 +67,13 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 - Idempotency guard (`processed_events`): `booking-service` và `escrow-service`
 - `postgres-user` chạy port **5441** (không phải 5432) vì local PostgreSQL chiếm 5432
 - `notification-service` + `ai-service` exclude JPA DataSource autoconfiguration (không dùng PostgreSQL)
+- **JWT**: HS256 — `JWT_SECRET` trong `.env`, TTL access=15min / refresh=30 days
+- **External services**: Google OAuth2, SendGrid (email), Cloudinary (proof upload), OpenAI (ai-service), FCM (push)
+- **spring-dotenv**: `me.paulschwarz:spring-dotenv:3.0.0` trong parent pom → tự load `.env` khi `mvn spring-boot:run`
+- **Env pattern**: infra vars có `:default` (hoạt động không cần .env), secrets không có default (fail fast nếu thiếu)
 
 ### 💬 Claude đã làm trong phiên này
-Phiên Day 1: tạo toàn bộ Maven multi-module scaffold (13 services + parent pom), docker-compose với 15 infra containers, fix 3 lỗi startup (port conflict, healthcheck tools), purge build artifacts khỏi git history, viết lại .gitignore professional, fix DataSource error cho notification-service và ai-service bằng autoconfigure exclude.
+Phiên Day 1+Env: tạo toàn bộ Maven multi-module scaffold, docker-compose 15 containers, fix startup errors, purge git history, viết lại .gitignore. Phiên Day 2 prep: thiết lập toàn bộ environment configuration — tạo `.env`/`.env.example`/`frontend/.env`, thêm spring-dotenv vào parent pom, cập nhật 11 `application.yml` với `${VAR:default}` pattern cho infra và `${VAR}` (no default) cho secrets (JWT, Google, SendGrid, Cloudinary, OpenAI, FCM).
 
 ---
 
