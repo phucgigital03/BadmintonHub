@@ -28,7 +28,7 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 
 > Phần này được cập nhật tự động bằng lệnh `/handoff` cuối mỗi phiên làm việc.
 
-**Cập nhật lần cuối**: 2026-06-06 23:45
+**Cập nhật lần cuối**: 2026-06-07 14:00
 
 ### ✅ Đã hoàn thành
 - Setup CLAUDE.md với rules index và quick reference
@@ -44,20 +44,34 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 - **Environment setup HOÀN THÀNH** — tạo đầy đủ `.env` / `.env.example` + `frontend/.env` / `frontend/.env.example`
   - Thêm `spring-dotenv 3.0.0` vào parent `pom.xml` — tất cả 13 module kế thừa tự động
   - Update 11 `application.yml` → dùng `${VAR:default}` syntax (infra có default, secrets fail fast)
-  - `mvn clean install -DskipTests` sau khi thêm dotenv → BUILD SUCCESS (14/14 modules)
   - `.env` gitignored, `.env.example` sẵn sàng commit
+- **Day 2 HOÀN THÀNH** — `common` module đầy đủ source + build pass
+  - `common/src/main/java/com/badmintonhub/common/entity/BaseAuditEntity.java`
+  - `common/.../exception/` — ApiException + 5 subclasses (ResourceNotFound, Conflict, Unauthorized, Forbidden, InvalidToken)
+  - `common/.../dto/response/` — ErrorResponse record + PageResponse\<T\> record
+  - `common/.../handler/GlobalExceptionHandler.java` — `@RestControllerAdvice`
+  - `mvn clean install -DskipTests` → BUILD SUCCESS (14/14 modules, 11.5s)
+- **`IMPLEMENTATION_GUIDE.md` nâng cấp** — thêm advanced Claude Code patterns (901 → 1147 dòng):
+  - Advanced Setup: hook auto-compile, permission allowlist, MCP Postgres inspector
+  - Git Worktrees + dependency graph + full workflow
+  - Agent Team Patterns (Layer/Feature/TDD split)
+  - ⚡ Parallel hints trên Day 8‖9, 13‖14, 20
+  - Code Review Workflow + checklist trước merge
+  - Troubleshooting nhanh (Kafka, Redis, Postgres, Zipkin, Eureka)
+- **`IMPLEMENTATION_GUIDE.md` per-day upgrade** — thêm block `🚀 Bản nâng cấp — Pro Workflow` vào 7 ngày phức tạp (Day 4, 7, 8, 11, 12, 14, 15), giữ nguyên 100% nội dung cũ:
+  - Mỗi block: agent team split cụ thể (ai làm gì + thứ tự dependency) + slash command (`/plan`, `/code-review`, `/security-review`, `/code-review ultra`) + worktree command (nơi áp dụng) + ⚠️ test bắt buộc
+  - Day 4: Layer Split 3 agents · Day 7: Feature Split + race test · Day 8: worktree + Layer Split · Day 11: TDD Split (Outbox/zombie) · Day 12: cùng service Day 11 nên KHÔNG worktree · Day 14: worktree + 3 agents (postgres/ES/api) · Day 15: 3 agents + ultra review
+  - Ngày scaffold đơn giản giữ nguyên theo quyết định của user
 
 ### 🔄 Đang làm
-- Người dùng đã điền `JWT_SECRET` thật vào `.env`
-- Còn cần điền: `GOOGLE_CLIENT_ID/SECRET`, `SENDGRID_API_KEY`, `CLOUDINARY_*`, `OPENAI_API_KEY`, `FCM_SERVER_KEY`
+- Còn cần điền `.env`: `GOOGLE_CLIENT_ID/SECRET`, `SENDGRID_API_KEY`, `CLOUDINARY_*`, `OPENAI_API_KEY`, `FCM_SERVER_KEY`
 
 ### 📋 Việc tiếp theo (theo thứ tự ưu tiên)
 1. **Hoàn thiện `.env`** — điền credentials thật: Google OAuth2, SendGrid, Cloudinary, OpenAI, FCM
-2. **Day 2** — `common` module (BaseAuditEntity, ErrorResponse, ApiException, PageResponse, GlobalExceptionHandler) + `eureka-server` full → verify http://localhost:8761
-3. **Day 3** — `api-gateway` JWT filter + Redis blacklist check + RateLimitFilter
-4. **Day 4** — `user-service` auth core (register, email verify, login, refresh token, logout)
-5. **Day 5** — `user-service` OAuth2 Google + profile endpoints + `court-service` scaffold
-6. **Day 6+** — theo IMPLEMENTATION_GUIDE.md
+2. **Day 3** — `api-gateway` JWT filter + Redis blacklist check + RateLimitFilter
+3. **Day 4** — `user-service` auth core (register, email verify, login, refresh token, logout)
+4. **Day 5** — `user-service` OAuth2 Google + profile endpoints + `court-service` scaffold
+5. **Day 6+** — theo IMPLEMENTATION_GUIDE.md (xem Parallelism hints cho Day 8‖9, 13‖14)
 
 ### 🧠 Quyết định kỹ thuật đã chốt
 - Payment: Bank QR + STAFF manual confirm — **không dùng VNPay hay bất kỳ payment gateway nào**
@@ -71,9 +85,11 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 - **External services**: Google OAuth2, SendGrid (email), Cloudinary (proof upload), OpenAI (ai-service), FCM (push)
 - **spring-dotenv**: `me.paulschwarz:spring-dotenv:3.0.0` trong parent pom → tự load `.env` khi `mvn spring-boot:run`
 - **Env pattern**: infra vars có `:default` (hoạt động không cần .env), secrets không có default (fail fast nếu thiếu)
+- **docker-compose chỉ chứa infra** — eureka-server và tất cả services chạy local bằng `mvn spring-boot:run`, không containerize
+- **IMPLEMENTATION_GUIDE.md per-day upgrade strategy**: chỉ nâng cấp 7 ngày phức tạp (Day 4, 7, 8, 11, 12, 14, 15), giữ nguyên ngày scaffold đơn giản; nội dung upgrade là **Claude Code workflow** (agent team + slash command + worktree), không phải production tasks
 
 ### 💬 Claude đã làm trong phiên này
-Phiên Day 1+Env: tạo toàn bộ Maven multi-module scaffold, docker-compose 15 containers, fix startup errors, purge git history, viết lại .gitignore. Phiên Day 2 prep: thiết lập toàn bộ environment configuration — tạo `.env`/`.env.example`/`frontend/.env`, thêm spring-dotenv vào parent pom, cập nhật 11 `application.yml` với `${VAR:default}` pattern cho infra và `${VAR}` (no default) cho secrets (JWT, Google, SendGrid, Cloudinary, OpenAI, FCM).
+Phiên này: thêm block `🚀 Bản nâng cấp — Pro Workflow (Claude Code)` vào 7 ngày phức tạp trong `IMPLEMENTATION_GUIDE.md` (Day 4, 7, 8, 11, 12, 14, 15), giữ nguyên 100% nội dung cũ của mỗi ngày. Mỗi block mô tả agent team split cụ thể (vai trò + thứ tự dependency), slash command nên chạy, worktree command nơi áp dụng, và test bắt buộc cho điểm dễ sai (race condition, Outbox/zombie). Theo lựa chọn của user: chỉ nâng cấp ngày phức tạp, ngày scaffold đơn giản giữ nguyên.
 
 ---
 
