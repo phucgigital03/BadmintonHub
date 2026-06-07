@@ -20,17 +20,39 @@ Quy ước trong mọi prompt:
 
 ## Advanced Claude Code Setup (làm 1 lần trước khi bắt đầu)
 
-### 1. Cấp quyền tự động để giảm permission prompts
+> Bốn mục dưới đây là **tùy chọn, làm 1 lần**. Custom commands (mục 1) đã tạo sẵn trong repo — dùng được ngay. Permissions / hooks / MCP (mục 2–4) cần `.claude/settings.json`; bật khi bạn thấy cần, dùng `/update-config` để Claude tự ghi file.
 
-Chạy `/fewer-permission-prompts` để Claude scan transcript và tự thêm allowlist vào `.claude/settings.json`. Hoặc thêm tay:
+### 1. Custom slash commands — đã có sẵn trong `.claude/commands/`
 
-```bash
-# .claude/settings.json
+Repo đã đóng gói sẵn các command tái sử dụng. Gõ `/` trong Claude Code để thấy danh sách:
+
+| Command | Khi nào dùng |
+|---|---|
+| `/plan-feat [task]` | Bắt buộc trước mỗi service phức tạp — Claude đọc code, liệt kê file sẽ đổi, edge case, **chờ approve** rồi mới code |
+| `/new-service [name]` | Scaffold 1 microservice mới đúng convention (package, Eureka client, GatewayHeaderAuthFilter, application.yml) |
+| `/race-test [endpoint]` | Sinh integration test concurrency (Testcontainers) cho điểm dễ race — booking slot, join match |
+| `/write-tests [feature]` | Test thường (happy + edge + error), tự chạy & fix |
+| `/done-check [service]` | Chạy Definition of Done: build + Eureka UP + smoke curl |
+| `/kafka-trace [topic]` | Debug Kafka: consume topic, consumer lag, kiểm tra `.DLT` |
+| `/redis-keys [pattern]` | Soi Redis key: lock, countdown, blacklist, rate-limit + TTL |
+| `/self-review` | Tự review `git diff` như senior khó tính trước khi commit |
+| `/explain-code [file]` | Hiểu code lạ + ai phụ thuộc nó trước khi sửa |
+| `/handoff` | Cuối phiên — cập nhật Session Progress trong CLAUDE.md |
+
+> Tự tạo thêm command riêng: thêm 1 file `.md` vào `.claude/commands/` với frontmatter `description` + `argument-hint` + `allowed-tools`; body dùng `$ARGUMENTS` (tham số), `!` + lệnh trong backtick (chèn output bash), `@path` (chèn file). Xem các file có sẵn làm mẫu.
+
+### 2. Cấp quyền tự động để giảm permission prompts
+
+Chạy `/fewer-permission-prompts` — Claude scan transcript và tự thêm allowlist vào `.claude/settings.json`. Hoặc thêm tay khối tối thiểu cho dự án này:
+
+```jsonc
+// .claude/settings.json
 {
   "permissions": {
     "allow": [
       "Bash(mvn:*)",
       "Bash(docker:*)",
+      "Bash(docker compose:*)",
       "Bash(git worktree:*)",
       "Bash(curl:*)"
     ]
@@ -38,9 +60,11 @@ Chạy `/fewer-permission-prompts` để Claude scan transcript và tự thêm a
 }
 ```
 
-### 2. Hook — Auto-compile sau mỗi lần sửa file Java
+### 3. Hooks — tự động hoá đúng nghĩa (harness chạy, không phải Claude)
 
-Thêm vào `.claude/settings.json` để Claude tự phát hiện lỗi compile ngay lập tức:
+Hook là lệnh shell **harness tự chạy** quanh mỗi tool call → dùng cho việc lặp đi lặp lại. Dùng `/update-config` để Claude ghi vào `.claude/settings.json`.
+
+**a. Auto-compile sau khi sửa file Java** — phát hiện lỗi compile tức thì (đọc `file_path` từ JSON stdin, lấy module = segment đầu path):
 
 ```json
 {
@@ -49,18 +73,32 @@ Thêm vào `.claude/settings.json` để Claude tự phát hiện lỗi compile 
       "matcher": "Edit|Write",
       "hooks": [{
         "type": "command",
-        "command": "FILE=$(echo '$CLAUDE_TOOL_INPUT' | jq -r '.file_path // empty'); MOD=$(echo $FILE | grep -o '^[^/]*'); [ -n \"$MOD\" ] && cd /Users/phucnguyen/ClaudeCodeProjects/badmintonHub && mvn -pl $MOD compile -q 2>&1 | tail -8 || true"
+        "command": "F=$(jq -r '.tool_input.file_path // empty'); case \"$F\" in *.java) M=${F##*badmintonHub/}; M=${M%%/*}; cd \"$CLAUDE_PROJECT_DIR\" && mvn -q -pl \"$M\" compile 2>&1 | tail -8;; esac"
       }]
     }]
   }
 }
 ```
 
-Dùng `/update-config` để Claude tự cấu hình hook này.
+> ⚠️ Hook này chạy `mvn compile` **mỗi lần** sửa file `.java` — tiện khi sửa lẻ tẻ, nhưng chậm khi Claude sửa hàng loạt file liên tiếp. Bật khi debug 1 service, tắt khi scaffold nhiều file. Mặc định repo **chưa bật**.
 
-### 3. MCP — Postgres Inspector (debug trực tiếp từ Claude)
+**b. Guard hook chặn VNPay** — enforce rule #2 (payment = Bank QR, **không** payment gateway) bằng máy, không phụ thuộc trí nhớ. `PreToolUse` exit code `2` → chặn tool call:
 
-Thêm MCP server để Claude query DB mà không cần copy-paste SQL:
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Edit|Write",
+      "hooks": [{
+        "type": "command",
+        "command": "jq -r '.tool_input // {}' | grep -iqE 'vnpay|momo|zalopay|stripe|paypal' && { echo 'BLOCKED: rule #2 — chỉ Bank QR + STAFF confirm, không payment gateway' >&2; exit 2; } || exit 0"
+      }]
+    }]
+  }
+}
+```
+
+### 4. MCP — Postgres Inspector (Claude query DB không cần copy-paste SQL)
 
 ```json
 {
@@ -77,7 +115,7 @@ Thêm MCP server để Claude query DB mà không cần copy-paste SQL:
 }
 ```
 
-Sau khi setup: hỏi Claude "Check xem booking table có PENDING record nào hơn 10 phút không?" — Claude sẽ tự query.
+Sau khi setup: hỏi "Check booking table có PENDING record nào > 10 phút không?" — Claude tự query qua MCP thay vì `docker exec ... psql`.
 
 ---
 
@@ -89,6 +127,62 @@ Sau khi setup: hỏi Claude "Check xem booking table có PENDING record nào hơ
 | **Week 2** | Booking core — slot, payment, escrow | Luồng đặt sân hoàn chỉnh với Bank QR + STAFF confirm |
 | **Week 3** | Matchmaking + notifications + coaches | Saga join-match, Outbox, realtime slot counter, notifications |
 | **Week 4** | Frontend + event-service + integration | UI hoàn chỉnh, toàn bộ luồng chạy từ browser |
+
+---
+
+## Claude Code Toolbox — dùng đúng công cụ cho đúng việc
+
+Bốn nhóm năng lực của Claude Code và khi nào với tới từng cái. Đây là "bản đồ" cho toàn bộ guide — mỗi Day phía dưới chỉ là áp dụng cụ thể.
+
+### Bảng quyết định nhanh
+
+| Tình huống | Công cụ | Ghi chú |
+|---|---|---|
+| Sắp build service phức tạp | `/plan-feat` → review → approve | Không bao giờ code thẳng service lớn khi chưa chốt plan |
+| Cần khảo sát "pattern này đang làm ở đâu" | Nhờ Claude dùng **subagent Explore** | Đọc rộng nhiều file, chỉ trả kết luận — không ngốn context chính |
+| 2 service độc lập, làm song song | **Git worktree** + 2 session (hoặc subagent `isolation: worktree`) | Xem dependency graph bên dưới |
+| 1 service to, nhiều layer/domain | Nhờ Claude **chạy nhiều subagent** theo Layer/Feature/TDD split | Trong 1 session, xem Agent Team Patterns |
+| Logic dễ sai (lock, Outbox, zombie) | `/race-test` hoặc TDD split (test trước, impl sau) | Test phải fail nếu bỏ lock thì mới có giá trị |
+| Xong 1 service | `/done-check` → `/code-review` → fix | Trước khi sang service kế |
+| Trước Week checkpoint | `/security-review` | @PreAuthorize, secrets, JWT |
+| Trước khi merge worktree về main | `/code-review ultra` | Deep multi-agent review trên cloud |
+| Service không chạy / event không tới | `/kafka-trace`, `/redis-keys`, MCP Postgres | Xem Troubleshooting |
+| Cuối phiên | `/handoff` | Cập nhật Session Progress trong CLAUDE.md |
+
+### Slash commands built-in (gõ `/` để xem)
+
+| Command | Tác dụng |
+|---|---|
+| `/code-review [low\|medium\|high\|max\|ultra]` | Review diff hiện tại. `low/medium` = ít finding chắc chắn; `high/max` = rộng hơn; `ultra` = multi-agent sâu trên cloud. Thêm `--fix` để tự áp findings, `--comment` để post lên PR |
+| `/security-review` | Review bảo mật toàn bộ thay đổi trên branch |
+| `/simplify` | Dọn code cho gọn/đỡ lặp (chỉ chất lượng, KHÔNG săn bug — bug thì dùng `/code-review`) |
+| `/verify` | Chạy app thật + quan sát hành vi để xác nhận 1 thay đổi đúng |
+| `/run` | Khởi động & điều khiển app để xem thay đổi chạy thực tế |
+| `/fewer-permission-prompts` | Sinh allowlist permission từ transcript |
+| `/update-config` | Cấu hình `.claude/settings.json` (hook, permission, env) bằng lời |
+
+### Subagents — khi nào và loại nào
+
+Subagent là **session phụ chạy độc lập, có context riêng**, trả về kết luận cho session chính. Bạn **yêu cầu Claude bằng lời** ("dùng 3 subagent song song để…", "dùng Explore agent tìm…") — Claude sẽ tự spawn. Mỗi subagent khởi động "nguội", phải tự dựng lại context → chỉ dùng khi việc đủ lớn để bõ.
+
+| Loại | Dùng cho | Ví dụ trong dự án |
+|---|---|---|
+| **Explore** · built-in | Tìm/khảo sát read-only, fan-out nhiều file, chỉ cần kết luận | "Tìm `@PreAuthorize` email-verified đã áp ở controller nào" |
+| **Plan** · built-in | Thiết kế plan triển khai, cân nhắc trade-off kiến trúc | Thiết kế Saga join-match + compensating transaction trước khi code |
+| **general-purpose** · built-in | Track độc lập nhiều bước (code + search + chạy) | Track bất kỳ của Agent Team nếu chưa tạo custom agent |
+| **spring-builder** · custom | Build 1 track service — nhúng sẵn 10 rule + package + Testcontainers | Mỗi track build trong Agent Team (Day 4,7,8,11,12,14,15) |
+| **test-writer** · custom | Viết test Testcontainers làm "spec" TRƯỚC, KHÔNG impl | TDD split Day 11 & 15; sinh race test |
+
+> `spring-builder` + `test-writer` (ở `.claude/agents/`) chỉ là `general-purpose` **đóng gói sẵn convention** để khỏi dặn lại mỗi lần — không bắt buộc, không thêm "sức mạnh" gì mới.
+
+Hai tuỳ chọn quan trọng khi spawn:
+- `run_in_background: true` — subagent chạy nền, bạn làm việc khác, được báo khi xong. Hợp cho test/build dài.
+- `isolation: "worktree"` — subagent làm trên git worktree riêng, không đụng working tree của bạn. Hợp cho 2 service song song mà không cần tự tạo worktree tay.
+
+### Plan mode vs `/plan-feat`
+
+- **`/plan-feat`** = custom command: nhắc Claude đọc code, liệt kê file, edge case rồi chờ approve. Nhẹ, dùng đầu mỗi service.
+- **Plan mode** (Shift+Tab để bật) = Claude **không được sửa file** cho tới khi bạn duyệt plan. Mạnh hơn — dùng khi muốn chắc chắn Claude chỉ đọc/khảo sát trong lúc lên kế hoạch cho việc rủi ro cao (matchmaking Saga, payment flow).
 
 ---
 
@@ -112,86 +206,99 @@ Week 4: Day 16 ‖ Day 17 ‖ Day 18 ‖ Day 19 (frontend pages độc lập nha
          Day 20 ‖ bất kỳ frontend day (event-service ‖ frontend)
 ```
 
-### Worktree Workflow
+### Cách 1 — Worktree thủ công + 2 terminal (kiểm soát rõ nhất)
 
 ```bash
 # Bước 1: Tạo 2 worktree cho 2 service song song (ví dụ Day 8 ‖ Day 9)
 git worktree add ../badmintonHub-payment feature/payment-service
 git worktree add ../badmintonHub-escrow  feature/escrow-service
 
-# Bước 2: Mở 2 terminal, mỗi terminal 1 Claude Code session
-# Terminal 1:
-cd ../badmintonHub-payment && claude
-# → paste Day 8 prompt, làm payment-service
+# Bước 2: COPY .env vào worktree mới — .env bị gitignore nên worktree KHÔNG tự có!
+cp .env ../badmintonHub-payment/.env
+cp .env ../badmintonHub-escrow/.env
+cp frontend/.env ../badmintonHub-payment/frontend/.env   # nếu worktree đó đụng frontend
 
-# Terminal 2:
-cd ../badmintonHub-escrow && claude
-# → paste Day 9 prompt, làm escrow-service
+# Bước 3: Mở 2 terminal, mỗi terminal 1 Claude Code session
+cd ../badmintonHub-payment && claude   # → paste prompt Day 8, làm payment-service (port 3006)
+cd ../badmintonHub-escrow  && claude   # → paste prompt Day 9, làm escrow-service  (port 3007)
 
-# Bước 3: Sau khi cả 2 xong, merge về main
+# Bước 4: Sau khi cả 2 xong + /code-review ultra pass, merge về main
 cd /Users/phucnguyen/ClaudeCodeProjects/badmintonHub
 git merge feature/payment-service
 git merge feature/escrow-service
 
-# Bước 4: Dọn worktrees
+# Bước 5: Dọn worktrees
 git worktree remove ../badmintonHub-payment
 git worktree remove ../badmintonHub-escrow
 git branch -d feature/payment-service feature/escrow-service
 ```
 
-> **Lưu ý**: mỗi worktree dùng cùng `.env` và docker infra — không cần start thêm container nào.
+### Cách 2 — Subagent với `isolation: "worktree"` (không cần terminal thứ 2)
+
+Trong 1 session, yêu cầu Claude: *"Dùng subagent với worktree isolation làm escrow-service (Day 9) ở nền, trong lúc đó mình làm payment-service ở đây"*. Claude tự tạo worktree tạm cho subagent, làm xong tự dọn nếu không có thay đổi. Hợp khi bạn không muốn quản lý worktree tay.
+
+> **3 cảnh báo bắt buộc khi chạy song song:**
+> 1. **`.env` không tự sang worktree** (gitignored) — phải `cp` thủ công, nếu không service fail fast vì thiếu secret.
+> 2. **Infra dùng chung** — chỉ chạy `docker-compose up -d` MỘT lần ở repo gốc. Mọi worktree share Postgres/Redis/Kafka đó, đừng `docker compose up` lại.
+> 3. **Chỉ song song service KHÁC nhau** (port khác nhau). Đừng để 2 session cùng `mvn spring-boot:run` một service → đụng port. Day 8 (3006) ‖ Day 9 (3007) an toàn; Day 11 và Day 12 cùng matchmaking-service (3004) → **KHÔNG** song song.
 
 ---
 
-## Agent Team Patterns — Chia nhỏ 1 service
+## Agent Team — Công thức thực thi
 
-Với các service phức tạp (user-service, booking-service, matchmaking-service), chia thành sub-tasks độc lập và chạy trong **cùng 1 session** bằng cách hướng dẫn Claude spawning agents:
+Cách **bấm-theo-được** để chia nhỏ 1 service phức tạp. Mỗi block 🚀 Pro Workflow ở từng Day phía dưới chỉ là bản rút gọn của công thức này.
 
-### Pattern A — Layer Split (cho service có nhiều entity)
+### 3 sự thật phải nhớ (vì sao công thức như vậy)
 
-Dùng khi prompt quá dài. Trong cùng 1 Claude session, bắt đầu bằng:
+1. **Subagent khởi động "nguội"** — KHÔNG thấy cuộc chat của bạn. Context của nó = *prompt bạn giao khi spawn* + *CLAUDE.md/rules tự nạp (cùng repo)* + *file nó tự `Read` trên đĩa*. ⇒ prompt giao việc phải đủ rõ.
+2. **"import Agent X" = đọc file Agent X đã COMMIT từ đĩa**, không phải chia sẻ trí nhớ. ⇒ track phụ thuộc phải **commit TRƯỚC** thì track sau mới đọc được.
+3. **Song song chỉ khi độc lập** — phần dính nhau (business cần entity) làm **tuần tự** trong 1 session sẽ nhanh & gọn hơn là spawn subagent nguội.
 
-```
-Tôi muốn build [service] theo 2 phase độc lập. Làm xong Phase A trước,
-commit, rồi làm Phase B.
-
-Phase A — Data layer:
-  [entity + repository + migration SQL]
-
-Phase B — Business layer (import Phase A):
-  [service + controller + kafka consumer + tests]
-```
-
-### Pattern B — Feature Split (cho service có nhiều domain)
+### Công thức 4 bước
 
 ```
-Build user-service theo 3 tracks song song (mỗi track 1 commit):
-  Track 1: Auth core (register/login/logout/refresh/JWT)
-  Track 2: OAuth2 + password reset  
-  Track 3: Profile CRUD + image upload
+BƯỚC 1 — PLAN:   /plan-feat {service} {mục tiêu}   → đọc plan → duyệt (hoặc sửa rồi duyệt).
 
-Làm Track 1 trước (dependency), Track 2 + Track 3 có thể song song.
+BƯỚC 2 — PHASE TUẦN TỰ (phần nền, làm 1 mình, COMMIT khi xong):
+   Gõ: "Dùng agent spring-builder làm {data layer}: entity + repository + migration. Xong COMMIT."
+   ↳ vì sao commit? để subagent ở Bước 3 ĐỌC được code này từ đĩa (xem sự thật #2).
+
+BƯỚC 3 — N SUBAGENT SONG SONG (các phần độc lập, cùng đọc code đã commit):
+   Gõ: "Dùng 2 subagent spring-builder SONG SONG, cả hai đọc code đã commit ở Bước 2:
+        • A: {track 1}
+        • B: {track 2}"
+   ↳ Claude spawn 2 subagent (mỗi cái context riêng) chạy đồng thời, xong gộp kết quả về.
+
+BƯỚC 4 — CHỐT:  /code-review  →  /security-review (trước Week checkpoint)  →  /done-check {service}
 ```
 
-### Pattern C — Test-Driven Split
+> **Biến thể TDD** (logic dễ sai — Outbox, zombie, Saga): ở Bước 3 cho **`test-writer` chạy TRƯỚC** (viết test làm spec, để ĐỎ), rồi **`spring-builder` impl** cho xanh. Hai cái này **tuần tự** (impl phải đọc test từ đĩa), không song song.
+
+### Ví dụ thật — Day 4 user-service (gõ nguyên văn 4 lượt)
 
 ```
-Bước 1: Viết integration tests (Testcontainers) cho Day X trước — chỉ test, chưa impl.
-Bước 2: Implement cho tests đó pass.
-→ Claude tự verify implementation đúng ngay lập tức.
+1.  /plan-feat user-service auth core
+    → duyệt plan.
+
+2.  "Dùng agent spring-builder làm data layer: User/Role/UserRole/AuditLog entity
+     + repository + Flyway migration. Chưa làm service/controller. Xong COMMIT."
+
+3.  "Dùng 2 subagent spring-builder song song, cả hai đọc code vừa commit:
+     • A: AuthService (register/verify/login/refresh/logout) + JWT util (HS256, jti) + SendGrid client.
+     • B: AuthController + GatewayHeaderAuthFilter + bean @authService.isEmailVerified + tests."
+
+4.  /code-review  →  /security-review  →  /done-check user-service
 ```
 
-### Ví dụ thực tế: Day 4 user-service (phức tạp nhất Week 1)
+### Song song hay tuần tự?
 
-```
-# Session chính — paste prompt Day 4 nhưng chia:
-"Phase A: Tạo entities (User, Role, UserRole, AuditLog) + repositories + Flyway migration.
- Không làm service/controller. Commit khi xong."
+| Tình huống | Cách | Ví dụ trong guide |
+|---|---|---|
+| Phần B cần entity/code của phần A | **Tuần tự** (1 session, commit giữa) | payment Day 8: entity → service → controller |
+| Các phần KHÔNG import nhau | **Song song** (N subagent `spring-builder`) | coach Day 14: Postgres ‖ Elasticsearch ‖ API |
+| Logic dễ sai, cần "spec" trước | **TDD** (`test-writer` trước → `spring-builder` impl) | matchmaking Day 11: Outbox/zombie |
 
-# Sau khi Phase A commit:
-"Phase B: Implement AuthService (register/login/logout/refresh) + AuthController
- + GatewayHeaderAuthFilter + tests. Import từ Phase A."
-```
+> Chưa tạo file `spring-builder`/`test-writer`? Vẫn chạy được bằng `general-purpose` built-in — chỉ là bạn phải tự dặn convention trong prompt mỗi lần. Hai agent trong `.claude/agents/` đã đóng gói sẵn lời dặn đó (xem Toolbox › Subagents).
 
 ---
 
@@ -389,22 +496,19 @@ curl -X POST http://localhost:3000/api/auth/register \
 
 **🚀 Bản nâng cấp — Pro Workflow (Claude Code)**
 
-Day 4 là service phức tạp nhất Week 1 — đừng paste 1 prompt dài, dùng **Agent Team (Layer Split)**:
+Service phức tạp nhất Week 1 → theo **Công thức Agent Team** (§ "Agent Team — Công thức thực thi"). Gõ lần lượt:
+
+1. **Plan** — `/plan-feat user-service auth core` → đọc plan → duyệt (chú ý edge: refresh rotation, blacklist TTL).
+2. **Phase nền** (làm 1 mình, **COMMIT** khi xong) — bảo Claude: *"dùng spring-builder làm data layer: `User`/`Role`/`UserRole`/`AuditLog` entities + repository + Flyway migration; chưa làm service/controller; commit."*
+3. **2 subagent song song** (cùng đọc code đã commit) — bảo Claude: *"dùng 2 subagent spring-builder song song:"*
+   - **A** — `AuthService` (register/verify/login/refresh/logout) + JWT util (HS256, jti) + SendGrid client.
+   - **B** — `AuthController` + `GatewayHeaderAuthFilter` + bean `@authService.isEmailVerified` + tests.
+4. **Chốt** — chạy:
 
 ```bash
-/plan        # review kiến trúc auth (JWT TTL, refresh rotation, blacklist) → approve trước khi code
-```
-
-🤖 **AGENT TEAM** (spawn trong 1 session sau khi `/plan` approve):
-- **Agent 1 — Data layer**: `User` / `Role` / `UserRole` / `AuditLog` entities + repositories + Flyway migration. Commit khi xong.
-- **Agent 2 — Auth logic**: `AuthService` (register/verify/login/refresh/logout) + JWT util (HS256, jti) + SendGrid client. Import Agent 1.
-- **Agent 3 — Security + API**: `AuthController` + `GatewayHeaderAuthFilter` + bean `@authService.isEmailVerified` + tests. Import Agent 1+2.
-
-Thứ tự: **Agent 1 trước** (dependency), rồi **Agent 2 ‖ Agent 3** song song.
-
-```bash
-/code-review       # sau khi merge 3 agents → fix findings
-/security-review   # JWT secret từ env, BCrypt cost ≥10, blacklist TTL = token remaining, no plaintext password log
+/code-review       # fix findings
+/security-review   # JWT secret env · BCrypt ≥10 · blacklist TTL = token remaining · KHÔNG log password
+/done-check user-service
 ```
 
 ---
@@ -553,17 +657,19 @@ Test: 2 request đồng thời cùng slotId -> chỉ 1 thành công, 1 nhận CO
 
 **🚀 Bản nâng cấp — Pro Workflow (Claude Code)**
 
-🤖 **AGENT TEAM (Feature Split)**:
-- **Agent 1 — Core booking**: `Booking` + `ProcessedEvent` entities + `BookingService` (Redis lock + Feign `lb://court-service` validate slot) + `BookingController` + cancellation policy.
-- **Agent 2 — Kafka layer**: `KafkaConfig` (DLT + backoff) + consumer `payment.player.confirmed` (idempotency guard) + producer `booking.slot.confirmed`.
+booking-service = lock + Kafka, hai tầng **phụ thuộc nhau** → tuần tự (KHÔNG song song). Theo **Công thức Agent Team**:
 
-Agent 1 trước (Agent 2 cần entity), rồi merge.
+1. **Plan** — `/plan-feat booking-service reservation + distributed lock` → duyệt.
+2. **Phase nền** (**COMMIT** khi xong) — *"dùng spring-builder: `Booking` + `ProcessedEvent` entities + `BookingService` (Redis lock + Feign `lb://court-service` validate slot) + `BookingController` + cancellation policy; commit."*
+3. **Phase Kafka** (đọc entity Bước 2 từ đĩa — cần entity nên KHÔNG song song) — *"dùng spring-builder: `KafkaConfig` (DLT + backoff) + consumer `payment.player.confirmed` (idempotency guard) + producer `booking.slot.confirmed`."*
+4. **Test bắt buộc + chốt** — chạy:
 
 ```bash
-/code-review   # focus: Redis lock release trong finally, @CircuitBreaker fallback DB lock, ack chỉ sau khi xử lý xong
+/race-test POST /api/bookings           # 2 booking đồng thời cùng slotId → đúng 1 PENDING, 1 CONFLICT
+/code-review                            # Redis lock release trong finally · @CircuitBreaker fallback DB lock · ack sau khi xử lý xong
+/kafka-trace payment.player.confirmed   # consumer nhận đúng, không LAG, không rớt .DLT
+/done-check booking-service
 ```
-
-⚠️ **Test bắt buộc** (điểm dễ sai nhất): integration test 2 concurrent booking cùng `slotId` (Testcontainers Redis) → đúng 1 PENDING, 1 nhận CONFLICT.
 
 ---
 
@@ -621,15 +727,18 @@ KafkaConfig DLT error handler như resilience.md. Tuân state machine payments.s
 
 **🚀 Bản nâng cấp — Pro Workflow (Claude Code)**
 
-Day 8 ‖ Day 9 chạy trong **worktree riêng** (xem hint đầu ngày). Bên trong worktree payment:
+Day 8 ‖ Day 9 trong **worktree riêng** — nhớ `cp .env ../badmintonHub-payment/.env` (gitignored!). Các tầng payment **phụ thuộc nhau** → **3 phase TUẦN TỰ trong 1 session** (KHÔNG subagent song song):
 
-🤖 **AGENT TEAM (Layer Split)**:
-- **Agent 1**: `BankAccount` / `Payment` / `PaymentProof` / `ManualRefund` entities + repos + `orderCode` SERIAL.
-- **Agent 2**: `PaymentService` (initiate/proof/confirm/reject/refund) + Cloudinary upload + Redis countdown + scheduler expire.
-- **Agent 3**: `PaymentController` + Kafka producers (6 topic) + `KafkaConfig` DLT + 2 rate-limit (proof).
+1. **Plan** — `/plan-feat payment-service Bank QR flow` → duyệt (nhấn mạnh: KHÔNG VNPay).
+2. **3 phase nối tiếp** (mỗi phase 1 lượt spring-builder, commit giữa) — bảo Claude làm tuần tự:
+   - **Phase 1** — `BankAccount`/`Payment`/`PaymentProof`/`ManualRefund` + repos + `orderCode` SERIAL.
+   - **Phase 2** — `PaymentService` (initiate/proof/confirm/reject/refund) + Cloudinary + Redis countdown + scheduler expire.
+   - **Phase 3** — `PaymentController` + Kafka producers (6 topic) + `KafkaConfig` DLT + rate-limit proof.
+3. **Chốt** — chạy:
 
 ```bash
-/security-review    # check: KHÔNG có VNPay/gateway nào, confirm/reject/refund đều STAFF-only @PreAuthorize
+/security-review    # KHÔNG VNPay/gateway (guard hook chặn sẵn) · confirm/reject/refund STAFF-only @PreAuthorize
+/done-check payment-service
 /code-review ultra  # deep review trước khi merge worktree về main
 ```
 
@@ -764,18 +873,17 @@ KafkaConfig DLT. State machine matches.status theo database.md.
 
 **🚀 Bản nâng cấp — Pro Workflow (Claude Code)**
 
-Outbox + Zombie check là logic dễ sai nhất dự án — dùng **TDD Split** để Claude tự verify:
+Outbox + zombie là logic dễ sai NHẤT dự án → **biến thể TDD** (test làm "spec" trước, để Claude tự verify). Gõ lần lượt:
+
+1. **Plan** — `/plan-feat matchmaking-service match creation + Outbox` → duyệt (Outbox rule #4 · zombie rule #6 · courtPrice snapshot rule #9).
+2. **test-writer TRƯỚC** (viết test, để **ĐỎ**, **COMMIT**) — *"dùng test-writer: integration test (Testcontainers + embedded Kafka): tạo match → OutboxEvent PENDING → scheduler publish → SENT; zombie event khi match CANCELLED → publish `match.compensate.slot`; chưa impl; commit."*
+3. **spring-builder impl cho XANH** (đọc test từ đĩa — tuần tự, KHÔNG song song) — *"dùng spring-builder đọc test vừa commit rồi implement cho pass: `Match`/`MatchParticipant`/`OutboxEvent` entities + `MatchService` + `OutboxPublisherScheduler` + consumer `payment.host.confirmed`."*
+4. **Chốt** — chạy:
 
 ```bash
-/plan   # review Outbox flow (rule #4) + zombie compensate (rule #6) + courtPrice snapshot (rule #9) trước
-```
-
-🤖 **AGENT TEAM (TDD Split)**:
-- **Agent 1 — Test trước**: integration test (Testcontainers + embedded Kafka): tạo match → OutboxEvent PENDING → scheduler publish → SENT; zombie event khi match CANCELLED → publish `match.compensate.slot`. Chưa impl.
-- **Agent 2 — Impl**: `Match` / `MatchParticipant` / `OutboxEvent` entities + `MatchService` + `OutboxPublisherScheduler` + consumer `payment.host.confirmed` → cho test Agent 1 pass.
-
-```bash
-/code-review   # focus rule #4 (Outbox cùng @Transactional với business record), rule #6 (zombie return sớm), rule #9 (courtPrice immutable)
+/code-review                          # rule #4 (Outbox cùng @Transactional) · rule #6 (zombie return sớm) · rule #9 (courtPrice immutable)
+/kafka-trace match.compensate.slot    # zombie event có publish compensating đúng không
+/done-check matchmaking-service
 ```
 
 ---
@@ -819,17 +927,19 @@ Test: nhiều request join đồng thời slot cuối -> chỉ 1 thành công (a
 
 **🚀 Bản nâng cấp — Pro Workflow (Claude Code)**
 
-Day 12 nối tiếp Day 11 (**cùng matchmaking-service** — KHÔNG worktree riêng). Saga + atomic counter:
+Nối tiếp Day 11 (**cùng matchmaking-service, port 3004** — KHÔNG worktree, KHÔNG song song với Day 11). Entity `Match` đã có từ Day 11 → đi thẳng 2 subagent:
 
-🤖 **AGENT TEAM (Feature Split)**:
-- **Agent 1 — Join + Saga**: endpoint join (Redis lock `lock:match:{id}` + INCR atomic counter + rate limit) + OutboxEvent `match.slot.joined` + consumer compensate (`booking.slot.confirmed` zombie check, `payment.player.expired` DECR).
-- **Agent 2 — Real-time**: Socket.io server (port 3004) + emit `slot-updated` tới room `match:{matchId}` + GET `/api/matches` filter Page<T>.
+1. **Plan** — `/plan-feat matchmaking-service player join Saga` → duyệt.
+2. **2 subagent song song** (đọc entity `Match` đã có trên đĩa; 2 phần độc lập) — bảo Claude: *"dùng 2 subagent spring-builder song song:"*
+   - **A** — endpoint join (Redis lock `lock:match:{id}` + INCR atomic counter + rate limit) + OutboxEvent `match.slot.joined` + consumer compensate (`booking.slot.confirmed` zombie, `payment.player.expired` DECR).
+   - **B** — Socket.io server (3004) + emit `slot-updated` room `match:{matchId}` + GET `/api/matches` filter Page<T>.
+3. **Test bắt buộc + chốt** — chạy:
 
 ```bash
-/code-review   # focus: atomic counter DECR khi vượt slot, compensate idempotent (an toàn khi event đến muộn), STAFF/ADMIN KHÔNG join được
+/race-test POST /api/matches/{id}/join   # join slot cuối đồng thời → đúng 1 thành công, còn lại MATCH_FULL
+/code-review                # atomic counter DECR khi vượt slot · compensate idempotent · STAFF/ADMIN KHÔNG join
+/redis-keys match:*:slots   # counter = filledSlots, không âm, không vượt totalSlots
 ```
-
-⚠️ **Test bắt buộc**: nhiều request join slot cuối đồng thời → đúng 1 thành công (atomic INCR + lock), phần còn lại MATCH_FULL.
 
 ---
 
@@ -913,15 +1023,18 @@ KAFKA CONSUMER: "payment.player.confirmed" (type COACH_ENROLLMENT) -> Enrollment
 
 **🚀 Bản nâng cấp — Pro Workflow (Claude Code)**
 
-Day 14 ‖ Day 13 trong **worktree riêng** (xem hint đầu ngày). Bên trong worktree coach:
+Day 14 ‖ Day 13 trong **worktree riêng** — nhớ `cp .env ../badmintonHub-coach/.env` (gitignored!). Theo **Công thức Agent Team**:
 
-🤖 **AGENT TEAM (Layer Split)**:
-- **Agent 1 — Postgres**: `Coach` / `CoachSchedule` / `CoachEnrollment` / `CoachReview` entities + repos + state machine + soft delete.
-- **Agent 2 — Elasticsearch**: index document `Coach` khi create/update + search service (specialty / rate range / rating / district).
-- **Agent 3 — API + Kafka**: controllers (apply/approve/suspend/enroll/review + review rate limit 2/ngày) + consumer `payment.player.confirmed` type COACH_ENROLLMENT.
+1. **Plan** — `/plan-feat coach-service profiles + Elasticsearch + enrollment` → duyệt.
+2. **Phase nền** (**COMMIT** khi xong) — *"dùng spring-builder: `Coach`/`CoachSchedule`/`CoachEnrollment`/`CoachReview` entities + repos + state machine + soft delete; commit."*
+3. **2 subagent song song** (cùng đọc entity đã commit) — bảo Claude: *"dùng 2 subagent spring-builder song song:"*
+   - **A** — Elasticsearch: index document `Coach` khi create/update + search (specialty/rate range/rating/district).
+   - **B** — API + Kafka: controllers (apply/approve/suspend/enroll/review + rate-limit 2/ngày) + consumer `payment.player.confirmed` type COACH_ENROLLMENT.
+4. **Chốt** — chạy:
 
 ```bash
-/code-review        # focus: ES sync với Postgres khi create/update, @PreAuthorize approve=ADMIN suspend=STAFF/ADMIN
+/code-review        # ES sync với Postgres khi create/update · @PreAuthorize approve=ADMIN suspend=STAFF/ADMIN
+/done-check coach-service
 /code-review ultra  # trước khi merge worktree về main
 ```
 
@@ -956,16 +1069,19 @@ Verify zombie check (event đến sau khi CANCELLED -> compensate, không xử l
 
 **🚀 Bản nâng cấp — Pro Workflow (Claude Code)**
 
-Day tích hợp — verify toàn bộ Week 3, ưu tiên test + review sâu:
+Day tích hợp — verify cả Week 3. 3 phần **độc lập** → **3 subagent song song** (trong đó 1 là test-writer):
 
-🤖 **AGENT TEAM**:
-- **Agent 1**: match lifecycle (`cancel` / `complete` qua Outbox) + admin Kafka replay endpoint (ADMIN-only).
-- **Agent 2**: cleanup schedulers (outbox SENT >30 ngày, processed_events >7 ngày).
-- **Agent 3 — TDD**: integration test full Saga join-match (Testcontainers + embedded Kafka): host tạo → confirm → OPEN → join → confirm → FULL → complete → escrow settlement; + verify zombie check (event đến sau CANCELLED → compensate, không xử lý stale).
+1. **Plan** — `/plan-feat Week 3 integration + admin endpoints` → duyệt.
+2. **3 subagent song song** (độc lập nhau) — bảo Claude: *"dùng 3 subagent song song:"*
+   - **A** (spring-builder) — match lifecycle `cancel`/`complete` qua Outbox + admin Kafka replay (ADMIN-only).
+   - **B** (spring-builder) — cleanup schedulers (outbox SENT >30 ngày, processed_events >7 ngày).
+   - **C** (test-writer) — integration test full Saga join-match (host tạo → confirm → OPEN → join → FULL → complete → escrow settlement) + verify zombie check (event sau CANCELLED → compensate, không xử lý stale).
+3. **Chốt** — chạy:
 
 ```bash
-/security-review    # toàn Week 3: @PreAuthorize đủ, admin replay ADMIN-only, không leak cross-service data
-/code-review ultra  # checkpoint cuối Week 3, deep review trước khi sang frontend Week 4
+/kafka-trace match.cancelled    # cancel phát đúng event tới notification/booking/escrow
+/security-review                # @PreAuthorize đủ · admin replay ADMIN-only · không leak cross-service data
+/code-review ultra              # checkpoint cuối Week 3, deep review trước khi sang frontend
 ```
 
 ---
@@ -1144,32 +1260,28 @@ mvn clean install -DskipTests
 
 ## Quy trình làm việc với Claude Code
 
-### Mỗi khi bắt đầu service mới:
+### Vòng đời 1 service (lặp lại mỗi Day)
 ```
-1. Xem Parallelism hint của ngày đó → tạo worktree nếu có thể làm song song.
-2. Mở phần ngày tương ứng, copy khối "Prompt Claude Code".
-   Với service phức tạp (Day 4, 7, 11): dùng Agent Team Pattern (Layer/Feature split).
-3. /plan trước khi implement → review plan → approve → Claude bắt đầu code.
-4. Implement theo thứ tự: entity → repository → service → controller → test.
-5. Chạy phần "Định nghĩa Done" trước khi sang ngày tiếp theo.
-6. /code-review sau khi xong service → fix findings.
-7. Verify service register Eureka UP trước khi qua service kế.
-8. /handoff cuối phiên để cập nhật CLAUDE.md.
+1. Xem Parallelism hint của ngày → nếu ‖ thì tạo worktree (nhớ cp .env!) hoặc nhờ subagent isolation.
+2. /plan-feat {service} {mục tiêu} → review plan → approve. Rủi ro cao (Saga, payment) → bật Plan mode (Shift+Tab).
+3. Service mới? → /new-service {name} scaffold trước, rồi mới vào business logic của Day.
+4. Implement: phase tuần tự (layer phụ thuộc) HOẶC subagent song song (domain độc lập).
+   Trong 1 phase: entity → repository → service → controller → test.
+5. Logic dễ race (booking, join match) → /race-test {endpoint}.
+6. /done-check {service} → build + Eureka UP + smoke curl.
+7. /code-review → fix findings. Trước Week checkpoint thêm /security-review.
+8. Kẹt? → /kafka-trace {topic} (event không tới) · /redis-keys {pattern} (lock treo).
+9. /handoff cuối phiên → cập nhật Session Progress trong CLAUDE.md.
 ```
 
-### Debug pattern:
+### Debug pattern (ưu tiên slash command, raw chỉ là fallback):
 ```bash
-# Check service logs
+/kafka-trace payment.host.confirmed   # thay kafka-console-consumer thủ công — kèm lag + check .DLT
+/redis-keys "lock:*"                  # thay redis-cli keys — kèm TTL + đối chiếu Key Registry
+
+# Fallback raw khi muốn soi tay:
 mvn -pl {service} spring-boot:run 2>&1 | grep -E "ERROR|WARN|Started"
-
-# Check Kafka events
-docker exec -it kafka kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 \
-  --topic payment.host.confirmed --from-beginning
-
-# Check Redis keys
-docker exec -it redis redis-cli keys "lock:*"
-docker exec -it redis redis-cli keys "payment:countdown:*"
+docker exec redis redis-cli --scan --pattern "payment:countdown:*"
 ```
 
 ### Thứ tự ưu tiên khi bị block:
@@ -1211,6 +1323,8 @@ git merge feature/{service}
 ---
 
 ## Troubleshooting nhanh
+
+> Nhanh nhất: `/kafka-trace {topic}` · `/redis-keys {pattern}` · `/done-check {service}` — Claude tự chạy & đối chiếu rule. Lệnh raw dưới đây là fallback khi muốn soi tay.
 
 ```bash
 # Service không start — xem 20 dòng cuối log
