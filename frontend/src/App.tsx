@@ -9,6 +9,9 @@ import CourtsPage from './pages/booking/CourtsPage';
 import CourtDayBookingPage from './pages/booking/CourtDayBookingPage';
 import PriceTablePage from './pages/booking/PriceTablePage';
 import BookingConfirmPage from './pages/booking/BookingConfirmPage';
+import EventsPage from './pages/events/EventsPage';
+import EventDetailPage from './pages/events/EventDetailPage';
+import PaymentPage from './pages/PaymentPage';
 import { ProtectedRoute } from './components/routing/ProtectedRoute';
 
 export default function App() {
@@ -36,7 +39,12 @@ export default function App() {
       <Route path="/courts/:courtId/pricing" element={<PriceTablePage />} />
       <Route path="/booking/confirm" element={<BookingConfirmPage />} />
 
-      {/* Events, payment, matches, admin, coaches added in later phases. */}
+      {/* Events + payment (mock) */}
+      <Route path="/events" element={<EventsPage />} />
+      <Route path="/events/:eventId" element={<EventDetailPage />} />
+      <Route path="/payment" element={<PaymentPage />} />
+
+      {/* Matches, admin, coaches added in the next phase. */}
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );
