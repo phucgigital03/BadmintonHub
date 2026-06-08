@@ -457,6 +457,16 @@ curl -i http://localhost:3000/actuator/health # → 200 (public, skip JWT)
 
 ---
 
+### Test Foundation (đã dựng — trước Day 4)
+
+Nền test dùng chung cho mọi service từ Day 4 (xem `.claude/rules/testing.md`):
+- Module **`common-test`**: `AbstractIntegrationTest` (Testcontainers PostgreSQL + Redis, singleton) ·
+  `AbstractKafkaIntegrationTest` (+ Kafka) · `JwtTestTokens` (mint JWT test khớp `JwtUtil`).
+- Parent pom: `maven-failsafe-plugin` → `*Test.java` = unit (surefire, `mvn test`), `*IT.java` = integration
+  (failsafe, `mvn verify`). Spring Boot BOM quản version Testcontainers.
+- **Cách dùng**: build chức năng → gõ **`/write-tests {service} {feature}`** (tự viết unit + integration test
+  trên nền `common-test` + chạy `mvn verify` + fix). Điểm dễ race → **`/race-test {endpoint}`**.
+
 ### Day 4: user-service — Auth core
 
 **Mục tiêu**: Register → Email verify → Login → JWT token hoạt động.
@@ -499,7 +509,9 @@ SECURITY (rbac-security.md "Spring Security Config per service" — DEFENSE-IN-D
   (gateway không gửi). csrf disable, session STATELESS, /actuator/health permitAll.
 - Bean @authService.isEmailVerified(authentication) cho @PreAuthorize dùng sau.
 
-Test (java-spring.md naming methodName_scenario_expectedResult): register, verify, login happy path.
+Test (testing.md): unit (Mockito) cho AuthService + integration `*IT` extends `AbstractIntegrationTest`
+(`common-test`) cho register/verify/login happy + edge; endpoint secured dùng `JwtTestTokens`.
+Thêm `common-test` (scope test) vào pom. Gõ `/write-tests user-service auth` → `mvn verify` xanh trước commit.
 ```
 
 **Định nghĩa Done**:
@@ -537,7 +549,7 @@ Tasks:
 - [ ] Google OAuth2 + forgot/reset password
 - [ ] Profile endpoints (own-resource guard)
 - [ ] Cloudinary upload
-- [ ] court-service scaffold + Eureka
+- [ ] court-service: `/new-service court-service` + entity skeleton
 
 **Prompt Claude Code**:
 ```
@@ -557,10 +569,11 @@ PHẦN A — user-service bổ sung:
 - POST /api/upload/image (multipart): Cloudinary upload -> trả { url }.
 
 PHẦN B — court-service scaffold (DB = court_db):
-- Entity skeleton (extend BaseAuditEntity, PK UUID): Court, TimeSlot, CourtReview.
+- Scaffold qua `/new-service court-service` TRƯỚC (Vòng đời bước 3) — sinh sẵn pom, Eureka client,
+  `SecurityFilterChain` + `JwtAuthFilter` re-validate (common-security JwtUtil), application.yml.
+- Thêm entity skeleton (extend BaseAuditEntity, PK UUID): Court, TimeSlot, CourtReview.
   Cross-service ref ownerId/userId là UUID thuần, comment 'ref users.id · cross-service UUID',
   KHÔNG @ManyToOne cross-service (database.md).
-- Eureka client config (eureka-config.md), JwtAuthFilter giống user-service.
 - Chưa cần business logic — chỉ cần service start + register Eureka UP.
 
 Verify: Eureka dashboard hiện user-service và court-service đều UP.
@@ -1280,7 +1293,9 @@ mvn clean install -DskipTests
 ```
 1. Xem Parallelism hint của ngày → nếu ‖ thì tạo worktree (nhớ cp .env!) hoặc nhờ subagent isolation.
 2. /plan-feat {service} {mục tiêu} → review plan → approve. Rủi ro cao (Saga, payment) → bật Plan mode (Shift+Tab).
-3. Service mới? → /new-service {name} scaffold trước, rồi mới vào business logic của Day.
+3. Service mới? → /new-service {name} scaffold trước (gồm SecurityFilterChain + JwtAuthFilter
+   RE-VALIDATE qua common-security JwtUtil — defense-in-depth), rồi mới vào business logic của Day.
+   Các Day business-logic KHÔNG lặp lại bước scaffold — luôn /new-service trước nếu service chưa tồn tại.
 4. Implement: phase tuần tự (layer phụ thuộc) HOẶC subagent song song (domain độc lập).
    Trong 1 phase: entity → repository → service → controller → test.
 5. Logic dễ race (booking, join match) → /race-test {endpoint}.

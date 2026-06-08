@@ -132,7 +132,9 @@ public void onPlayerPaymentConfirmed(ConsumerRecord<String, String> record,
 
 ## Testing
 
-- Unit tests: `@ExtendWith(MockitoExtension.class)` — mock all external dependencies
-- Integration tests: `@SpringBootTest` + `@Testcontainers` with real PostgreSQL/Redis
-- No in-memory H2 for JPA tests — use `@DataJpaTest` with Testcontainers PostgreSQL
+Full playbook: **`.claude/rules/testing.md`** (test pyramid, `common-test` base, `*Test`/`*IT`, `mvn verify`).
+
+- Unit tests (`*Test.java`): `@ExtendWith(MockitoExtension.class)` — mock all external dependencies
+- Integration tests (`*IT.java`): `@SpringBootTest` + `extends AbstractIntegrationTest` (module `common-test` — Testcontainers PostgreSQL/Redis, **no H2**)
+- Secured endpoints in tests: `JwtTestTokens.bearer(secret, userId, "ROLE_USER")`
 - Test naming: `methodName_scenario_expectedResult`

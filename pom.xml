@@ -21,6 +21,7 @@
     <modules>
         <module>common</module>
         <module>common-security</module>
+        <module>common-test</module>
         <module>eureka-server</module>
         <module>api-gateway</module>
         <module>user-service</module>
@@ -67,6 +68,13 @@
             <dependency>
                 <groupId>com.badmintonhub</groupId>
                 <artifactId>common-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- Internal common-test module — shared Testcontainers base + JWT test helper (scope=test) -->
+            <dependency>
+                <groupId>com.badmintonhub</groupId>
+                <artifactId>common-test</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -169,5 +177,22 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
+        <!-- Inherited by all modules: surefire runs *Test (unit) in `test`; failsafe runs *IT
+             (integration, Testcontainers) in `verify`. Both skipped by -DskipTests. -->
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
     </build>
 </project>
