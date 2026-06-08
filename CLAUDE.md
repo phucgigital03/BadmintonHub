@@ -28,7 +28,7 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 
 > Phần này được cập nhật tự động bằng lệnh `/handoff` cuối mỗi phiên làm việc.
 
-**Cập nhật lần cuối**: 2026-06-07 14:00
+**Cập nhật lần cuối**: 2026-06-09
 
 ### ✅ Đã hoàn thành
 - Setup CLAUDE.md với rules index và quick reference
@@ -62,6 +62,15 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
   - Mỗi block: agent team split cụ thể (ai làm gì + thứ tự dependency) + slash command (`/plan`, `/code-review`, `/security-review`, `/code-review ultra`) + worktree command (nơi áp dụng) + ⚠️ test bắt buộc
   - Day 4: Layer Split 3 agents · Day 7: Feature Split + race test · Day 8: worktree + Layer Split · Day 11: TDD Split (Outbox/zombie) · Day 12: cùng service Day 11 nên KHÔNG worktree · Day 14: worktree + 3 agents (postgres/ES/api) · Day 15: 3 agents + ultra review
   - Ngày scaffold đơn giản giữ nguyên theo quyết định của user
+- **Phiên 2026-06-08 — Pro Claude Code workflow (commands + agents + guide executable)**:
+  - **5 custom command MỚI** (`.claude/commands/`): `new-service`, `done-check`, `race-test`, `kafka-trace`, `redis-keys` → tổng **10 command**
+  - **Tối ưu 4 command CŨ** thành project-aware: `explain-code`, `plan-feat`, `self-review`, `write-tests` (đọc rule + 10 Never Violate + Testcontainers no-H2 + package chuẩn; viết tiếng Việt cho đồng bộ). `self-review` đổi `git diff HEAD~1`→`git diff HEAD`; `write-tests` thu hẹp quyền `Bash`→`Bash(mvn/docker)`
+  - **2 custom agent** (`.claude/agents/`): `spring-builder` (build track service đúng convention) + `test-writer` (test Testcontainers làm "spec", TDD). KHÔNG tạo reviewer/researcher (trùng `/code-review` + `Explore` built-in)
+  - **`IMPLEMENTATION_GUIDE.md` overhaul (~1254 → ~1390 dòng)**: thêm section "Claude Code Toolbox" (bảng quyết định công cụ); viết lại "Agent Team — Công thức thực thi" (4 bước **bấm-theo-được**); chuẩn hoá **7 block Pro Workflow** về skeleton *Plan → Phase nền (commit) → N subagent / TDD → Chốt* với câu gõ cụ thể; sửa `/plan`→`/plan-feat`; fix lỗi worktree `.env` (gitignored, phải `cp` tay) + hook auto-compile (đọc `jq` stdin)
+- **Phiên 2026-06-09 — Kafka UI thêm vào docker-compose.yml**:
+  - Thêm `kafka-ui` (provectuslabs/kafka-ui:latest) vào `docker-compose.yml` — port **8080**, depends on `kafka` healthy
+  - Kết nối qua internal listener `kafka:29092` (PLAINTEXT_INTERNAL), cluster name `badmintonhub-local`
+  - UI dùng được để browse topics, produce/consume message test, monitor consumer group lag, xem DLT topic
 
 ### 🔄 Đang làm
 - Còn cần điền `.env`: `GOOGLE_CLIENT_ID/SECRET`, `SENDGRID_API_KEY`, `CLOUDINARY_*`, `OPENAI_API_KEY`, `FCM_SERVER_KEY`
@@ -87,16 +96,24 @@ Detailed rules live in `.claude/rules/`. Two files are always loaded; the rest a
 - **Env pattern**: infra vars có `:default` (hoạt động không cần .env), secrets không có default (fail fast nếu thiếu)
 - **docker-compose chỉ chứa infra** — eureka-server và tất cả services chạy local bằng `mvn spring-boot:run`, không containerize
 - **IMPLEMENTATION_GUIDE.md per-day upgrade strategy**: chỉ nâng cấp 7 ngày phức tạp (Day 4, 7, 8, 11, 12, 14, 15), giữ nguyên ngày scaffold đơn giản; nội dung upgrade là **Claude Code workflow** (agent team + slash command + worktree), không phải production tasks
+- **Custom commands** (`.claude/commands/`, 10 file): custom = prompt template chạy trong **session chính** (chung context); gõ bằng `/`
+- **Custom agents** (`.claude/agents/`): `spring-builder` + `test-writer` = `general-purpose` đóng gói sẵn convention (`model: inherit`). Subagent khởi động **NGUỘI** — context = prompt spawn + CLAUDE.md/rules + file tự đọc trên đĩa; **"import Agent X" = đọc file đã COMMIT**; subagent chỉ spawn khi **user yêu cầu rõ** (không tự động)
+- **KHÔNG tạo `.claude/settings.json`** — hook (auto-compile + guard chặn VNPay), permission allowlist, MCP Postgres để **opt-in**; đã ghi hướng dẫn trong guide, bật bằng `/update-config`
+- **Pro Workflow = Công thức Agent Team 4 bước**: `/plan-feat` → Phase nền tuần tự (commit) → N subagent song song (độc lập) HOẶC TDD (`test-writer` trước → `spring-builder` impl) → `/code-review` + `/done-check`. Song song chỉ khi độc lập; phụ thuộc → tuần tự + commit giữa
+- **Kafka UI**: `provectuslabs/kafka-ui:latest` port 8080, dùng listener nội bộ `kafka:29092` — KHÔNG dùng host listener `localhost:9092` trong docker-compose nội bộ
 
 ### 💬 Claude đã làm trong phiên này
-Phiên này: thêm block `🚀 Bản nâng cấp — Pro Workflow (Claude Code)` vào 7 ngày phức tạp trong `IMPLEMENTATION_GUIDE.md` (Day 4, 7, 8, 11, 12, 14, 15), giữ nguyên 100% nội dung cũ của mỗi ngày. Mỗi block mô tả agent team split cụ thể (vai trò + thứ tự dependency), slash command nên chạy, worktree command nơi áp dụng, và test bắt buộc cho điểm dễ sai (race condition, Outbox/zombie). Theo lựa chọn của user: chỉ nâng cấp ngày phức tạp, ngày scaffold đơn giản giữ nguyên.
+Phiên 2026-06-09: thêm **Kafka UI** vào `docker-compose.yml`. Dùng image `provectuslabs/kafka-ui:latest`, port 8080, kết nối Kafka qua listener nội bộ `kafka:29092`, depends on `kafka` service_healthy. Mục đích: browse topic, produce/consume message khi dev, theo dõi consumer group lag và DLT topic trực quan thay vì dùng CLI. Phiên ngắn — 1 thay đổi nhỏ, không có quyết định kiến trúc mới.
+
+Phiên 2026-06-08: nâng dự án lên **Pro Claude Code workflow**. Tạo 5 custom command mới + tối ưu 4 command cũ thành project-aware (10 command tổng); tạo 2 custom agent `spring-builder` + `test-writer`; viết lại `IMPLEMENTATION_GUIDE.md` cho **thực thi được** — thêm "Claude Code Toolbox", viết lại "Agent Team — Công thức thực thi" (4 bước bấm-theo-được), chuẩn hoá 7 block Pro Workflow với câu gõ cụ thể. Phần lớn phiên là giải đáp + làm rõ cơ chế cho user: `/plan-feat` ≠ Plan Mode; subagent khởi động nguội, "import = đọc file đã commit từ đĩa", chỉ spawn khi yêu cầu rõ; agents/ rỗng thì vô tác dụng. Quyết định: KHÔNG tạo settings.json (giữ opt-in). Đã lưu memory về cách làm việc user ưa thích (thực thi được, ghét mô tả mơ hồ).
 
 ---
 
 ## Quick Reference
 
 ```bash
-docker-compose up -d                        # start all infra (PG×9, Redis, Mongo, Kafka, Eureka, Zipkin)
+docker compose up -d                        # start all infra (PG×9, Redis, Mongo, Kafka, Zookeeper, Zipkin, ES, Kafka UI)
+docker compose up -d kafka-ui               # start Kafka UI only (depends on kafka healthy)
 mvn clean install -DskipTests               # build all modules
 mvn -pl user-service spring-boot:run        # run one service
 cd frontend && npm install && npm run dev   # frontend dev server
@@ -105,6 +122,7 @@ cd frontend && npm install && npm run dev   # frontend dev server
 | Service | Port |
 |---|---|
 | eureka-server | 8761 |
+| kafka-ui | 8080 |
 | api-gateway | 3000 |
 | user-service | 3001 |
 | court-service | 3002 |

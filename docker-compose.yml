@@ -267,6 +267,22 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ── Kafka UI ─────────────────────────────────────────────────────────────────
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: badmintonhub-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
   # ── Elasticsearch ─────────────────────────────────────────────────────────
 
   elasticsearch:
