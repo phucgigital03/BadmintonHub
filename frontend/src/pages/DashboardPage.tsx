@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { PageShell } from '../components/layout/PageShell';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import { NotificationBell } from '../components/layout/NotificationBell';
 import { useAuthStore } from '../store/authStore';
 
 export default function DashboardPage() {
@@ -12,6 +13,9 @@ export default function DashboardPage() {
 
   return (
     <PageShell title={t('nav.dashboard')} onBack={() => navigate('/')}>
+      <div className="mb-3 flex justify-end">
+        <NotificationBell />
+      </div>
       <Card className="mb-4">
         <h2 className="text-lg font-bold text-brand-accent">Xin chào, {user?.fullName ?? 'bạn'} 👋</h2>
         <p className="mt-1 text-sm text-white/80">{user?.email}</p>

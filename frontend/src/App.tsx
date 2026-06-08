@@ -12,6 +12,11 @@ import BookingConfirmPage from './pages/booking/BookingConfirmPage';
 import EventsPage from './pages/events/EventsPage';
 import EventDetailPage from './pages/events/EventDetailPage';
 import PaymentPage from './pages/PaymentPage';
+import MatchesPage from './pages/matches/MatchesPage';
+import MatchDetailPage from './pages/matches/MatchDetailPage';
+import CoachesPage from './pages/coach/CoachesPage';
+import CoachDetailPage from './pages/coach/CoachDetailPage';
+import AdminPage from './pages/admin/AdminPage';
 import { ProtectedRoute } from './components/routing/ProtectedRoute';
 
 export default function App() {
@@ -44,7 +49,17 @@ export default function App() {
       <Route path="/events/:eventId" element={<EventDetailPage />} />
       <Route path="/payment" element={<PaymentPage />} />
 
-      {/* Matches, admin, coaches added in the next phase. */}
+      {/* Matchmaking + realtime (mock) */}
+      <Route path="/matches" element={<MatchesPage />} />
+      <Route path="/matches/:matchId" element={<MatchDetailPage />} />
+
+      {/* Coaches (mock) */}
+      <Route path="/coaches" element={<CoachesPage />} />
+      <Route path="/coaches/:coachId" element={<CoachDetailPage />} />
+
+      {/* Admin (RoleGuard STAFF/ADMIN) */}
+      <Route path="/admin" element={<AdminPage />} />
+
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );
