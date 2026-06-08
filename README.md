@@ -109,6 +109,7 @@ BadmintonHub solves a real problem in Vietnam's badminton community: fragmented 
 | `event-service` | 3009 | Social/competitive events, ticket sales |
 | `ai-service` | 3010 | RAG chatbot for court & match recommendations |
 | `common` | — | Shared: `BaseAuditEntity`, `GlobalExceptionHandler`, DTOs, exceptions |
+| `common-security` | — | Shared `JwtUtil` (HS256 verify, web/JPA-free) — used by the Gateway + every service for JWT re-validation |
 
 ---
 
@@ -180,11 +181,12 @@ Payment is Bank QR + manual proof upload (Cloudinary) + STAFF confirmation. Refu
 ### 7. Redis Distributed Locking for Slot Race Conditions
 When two players attempt to join the last match slot simultaneously, a Redis `SETNX` lock (5s TTL) serializes access. If Redis is unavailable, a Resilience4j circuit breaker falls back to `SELECT FOR UPDATE` on a PostgreSQL lock table.
 
-### 8. JWT Architecture
-- **Access token**: 15-minute TTL, validated at the Gateway only
+### 8. JWT Architecture (defense in depth)
+- **Access token**: 15-minute TTL, validated at the Gateway **and** re-validated by each downstream service
 - **Refresh token**: 30-day TTL, stored as bcrypt hash in the DB, delivered via `HttpOnly SameSite=Strict` cookie
-- **Logout blacklist**: `jti` stored in Redis with TTL = remaining access token lifetime
-- Downstream services trust `X-User-Id` / `X-User-Roles` headers forwarded by the Gateway — no redundant JWT validation per service
+- **Logout blacklist**: `jti` stored in Redis with TTL = remaining access token lifetime; the Gateway rejects blacklisted tokens (fail-open if Redis is down)
+- The Gateway forwards only the `Authorization: Bearer` token (no `X-User-Id`/`X-User-Roles` headers). Each service re-validates that token with the shared `common-security` `JwtUtil` and derives identity from the verified claims — the token is the single source of identity
+- **Rate limiting**: Spring Cloud Gateway's built-in `RequestRateLimiter` (Redis token-bucket), keyed by userId (client IP for public paths)
 
 ### 9. Kafka Dead Letter Topics + Exponential Backoff
 Every Kafka consumer is configured with a `DefaultErrorHandler` that retries 3 times (2s → 4s → 8s exponential backoff) before routing the message to `{topic}.DLT`. An admin endpoint allows DLT replay.

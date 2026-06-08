@@ -20,6 +20,7 @@
 
     <modules>
         <module>common</module>
+        <module>common-security</module>
         <module>eureka-server</module>
         <module>api-gateway</module>
         <module>user-service</module>
@@ -41,6 +42,7 @@
         <mapstruct.version>1.5.5.Final</mapstruct.version>
         <lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
         <spring-dotenv.version>3.0.0</spring-dotenv.version>
+        <jjwt.version>0.12.6</jjwt.version>
     </properties>
 
     <dependencyManagement>
@@ -59,6 +61,32 @@
                 <groupId>com.badmintonhub</groupId>
                 <artifactId>common</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <!-- Internal common-security module — shared JWT util (web/JPA-free) -->
+            <dependency>
+                <groupId>com.badmintonhub</groupId>
+                <artifactId>common-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- jjwt — JWT parsing/verification (HS256) -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+                <scope>runtime</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
+                <scope>runtime</scope>
             </dependency>
 
             <!-- spring-dotenv: load .env file into Spring Environment -->
@@ -102,6 +130,15 @@
     <build>
         <pluginManagement>
             <plugins>
+                <!-- Run every module with the reactor root as CWD so spring-dotenv finds the
+                     single root .env (the run goal otherwise forks with the module dir as CWD). -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <configuration>
+                        <workingDirectory>${session.executionRootDirectory}</workingDirectory>
+                    </configuration>
+                </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>

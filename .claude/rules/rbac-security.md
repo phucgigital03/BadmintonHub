@@ -63,14 +63,20 @@ Always put on the controller method, never in filters or service layer:
 - **Access token TTL:** 15 minutes — signed with RS256 or HS256
 - **Refresh token TTL:** 30 days — stored as bcrypt hash in `users.refresh_token_hash`, sent as HttpOnly SameSite=Strict cookie
 - **Blacklist:** On logout, add `jti` to Redis `session:blacklist:{jti}` with TTL = remaining token lifetime
-- **Gateway filter:** Validate JWT on every request before routing. Rejected requests return 401 immediately.
+- **Gateway filter:** Validate JWT on every request before routing. Rejected requests return 401 immediately with `{ code, message, timestamp }` (codes: `TOKEN_MISSING` / `TOKEN_EXPIRED` / `TOKEN_INVALID` / `TOKEN_REVOKED`).
 
 ```java
-// Gateway JWT filter checks
-// 1. Token present and not expired
-// 2. jti not in Redis blacklist
-// 3. Pass userId + roles in downstream headers: X-User-Id, X-User-Roles
+// Gateway JwtAuthenticationFilter checks (GlobalFilter, HIGHEST_PRECEDENCE)
+// 1. Skip public paths: /api/auth/**, /actuator/**
+// 2. Token present, signature valid, not expired
+// 3. jti not in Redis session:blacklist:{jti}  (fail-open if Redis is down)
+// 4. Forward the verified `Authorization: Bearer` token UNCHANGED downstream.
+//    Do NOT emit X-User-Id / X-User-Roles — the token is the single source of identity.
+//    (userId is stashed in a gateway-internal exchange attribute only, to key the rate limiter.)
 ```
+
+JWT verification uses the shared `com.badmintonhub.security.JwtUtil` (module `common-security`,
+web/JPA-free) — the same class both the gateway and every downstream service depend on.
 
 ## Google OAuth2
 
@@ -81,7 +87,11 @@ Always put on the controller method, never in filters or service layer:
 
 ## Spring Security Config (per service)
 
-Services behind the Gateway trust the forwarded `X-User-Id` and `X-User-Roles` headers. They do **not** re-validate the JWT — the Gateway is the single auth boundary.
+**Defense in depth — every service re-validates the JWT.** The Gateway is the first auth gate, but
+it is **not** the only one. Each service runs its own filter that re-validates the forwarded
+`Authorization: Bearer` token with `com.badmintonhub.security.JwtUtil` and derives `userId` + roles
+from the verified claims. The token is the single source of identity — services do **not** trust any
+`X-User-Id` / `X-User-Roles` headers (the Gateway does not send them).
 
 ```java
 @Bean
@@ -93,7 +103,11 @@ public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Excepti
             .requestMatchers("/actuator/health").permitAll()
             .anyRequest().authenticated()
         )
-        .addFilterBefore(gatewayHeaderAuthFilter, UsernamePasswordAuthenticationFilter.class)
+        // re-validates Bearer token via shared JwtUtil, populates Authentication from claims
+        .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
         .build();
 }
 ```
+
+> The per-service `jwtAuthFilter` is built when each service is implemented (Day 4+). Today only the
+> shared `JwtUtil` (module `common-security`) exists for them to reuse.

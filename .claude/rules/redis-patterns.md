@@ -19,7 +19,7 @@ alwaysApply: false
 | `email:verify:{token}` | 24h | Email verification token → userId | user-service |
 | `password:reset:{token}` | 1h | Password reset token → userId | user-service |
 | `courts:{district}:{type}:{date}` | 60s | Cached court search results | court-service |
-| `rate_limit:{userId}` | 60s | Global rate limit counter | api-gateway |
+| `rate_limit:{userId}` | 60s | Global rate limit *intent* — api-gateway actually uses Spring Cloud Gateway's built-in `RequestRateLimiter` (token-bucket); live keys are `request_rate_limiter.{route}.{tokens\|timestamp}`, keyed by userId (or client IP on public paths) | api-gateway |
 | `rate_limit:join:{userId}` | 60s | Max 5 join attempts/min | matchmaking-service |
 | `rate_limit:proof:{userId}` | 300s | Max 3 proof uploads per 5 min | payment-service |
 | `rate_limit:review:{userId}` | 86400s | Max 2 reviews/day per coach | coach-service |

@@ -29,7 +29,7 @@ Repo đã đóng gói sẵn các command tái sử dụng. Gõ `/` trong Claude 
 | Command | Khi nào dùng |
 |---|---|
 | `/plan-feat [task]` | Bắt buộc trước mỗi service phức tạp — Claude đọc code, liệt kê file sẽ đổi, edge case, **chờ approve** rồi mới code |
-| `/new-service [name]` | Scaffold 1 microservice mới đúng convention (package, Eureka client, GatewayHeaderAuthFilter, application.yml) |
+| `/new-service [name]` | Scaffold 1 microservice mới đúng convention (package, Eureka client, JwtAuthFilter, application.yml) |
 | `/race-test [endpoint]` | Sinh integration test concurrency (Testcontainers) cho điểm dễ race — booking slot, join match |
 | `/write-tests [feature]` | Test thường (happy + edge + error), tự chạy & fix |
 | `/done-check [service]` | Chạy Definition of Done: build + Eureka UP + smoke curl |
@@ -285,7 +285,7 @@ BƯỚC 4 — CHỐT:  /code-review  →  /security-review (trước Week checkp
 
 3.  "Dùng 2 subagent spring-builder song song, cả hai đọc code vừa commit:
      • A: AuthService (register/verify/login/refresh/logout) + JWT util (HS256, jti) + SendGrid client.
-     • B: AuthController + GatewayHeaderAuthFilter + bean @authService.isEmailVerified + tests."
+     • B: AuthController + JwtAuthFilter + bean @authService.isEmailVerified + tests."
 
 4.  /code-review  →  /security-review  →  /done-check user-service
 ```
@@ -306,7 +306,7 @@ BƯỚC 4 — CHỐT:  /code-review  →  /security-review (trước Week checkp
 
 ### Day 1: Maven Multi-Module scaffold + infra
 
-**Mục tiêu**: `docker-compose up` chạy được, tất cả 13 module compile.
+**Mục tiêu**: `docker-compose up` chạy được, tất cả 13 module compile. *(Module `common-security` được thêm ở Day 3 → tổng 14 module về sau.)*
 
 Tasks:
 - [ ] Tạo parent `pom.xml` (Java 21, Spring Boot 3.2.5, Spring Cloud 2023.0.1)
@@ -350,7 +350,7 @@ và `docker-compose up -d` lên đủ container.
 **Định nghĩa Done**:
 ```bash
 docker-compose up -d && docker-compose ps   # tất cả container healthy
-mvn clean install -DskipTests               # BUILD SUCCESS, 13 modules
+mvn clean install -DskipTests               # BUILD SUCCESS, 13 modules (14 sau khi thêm common-security ở Day 3)
 ```
 
 ---
@@ -397,48 +397,62 @@ mvn -pl eureka-server spring-boot:run
 
 ---
 
-### Day 3: api-gateway
+### Day 3: api-gateway ✅ ĐÃ HOÀN THÀNH
 
 **Mục tiêu**: Gateway chạy port 3000, JWT filter hoạt động, route đến tất cả service qua `lb://`.
 
 Tasks:
-- [ ] Dependencies gateway + eureka client + redis
-- [ ] 10 route `lb://`
-- [ ] `JwtAuthenticationFilter` + Redis blacklist + forward headers
-- [ ] `RateLimitFilter`
+- [x] Module mới `common-security` (`JwtUtil` verify HS256 — web/JPA-free, dùng chung gateway + service)
+- [x] Dependencies gateway + eureka client + redis-reactive
+- [x] 10 route `lb://`
+- [x] `JwtAuthenticationFilter` + Redis blacklist (fail-open) + forward **chỉ** Bearer token (KHÔNG header identity)
+- [x] Rate limit bằng **built-in `RequestRateLimiter`** (token-bucket) qua `default-filters`
 
-**Prompt Claude Code**:
+**Đã implement (khớp code thực tế — `JwtAuthenticationFilter` / `GatewayConfig`)**:
 ```
 Đọc trước: .claude/rules/eureka-config.md, .claude/rules/rbac-security.md, .claude/rules/redis-patterns.md.
 
-Implement api-gateway (Spring Cloud Gateway, reactive WebFlux):
+api-gateway = Spring Cloud Gateway, reactive WebFlux:
+
+0. Module mới `common-security` (web/JPA-free): class `com.badmintonhub.security.JwtUtil` verify
+   HS256 thuần bằng jjwt 0.12.6 — DÙNG CHUNG cho gateway + mọi downstream service. Gateway KHÔNG
+   depend `common` (vì `common` kéo Spring MVC @RestControllerAdvice + JPA, xung đột Netty/WebFlux);
+   gateway tự build error JSON {code,message,timestamp} bằng Jackson + DataBuffer.
 
 1. Dependencies: spring-cloud-starter-gateway, spring-cloud-starter-netflix-eureka-client,
-   spring-boot-starter-data-redis-reactive, jjwt (hoặc nimbus) để verify JWT.
+   spring-boot-starter-data-redis-reactive, common-security (kéo jjwt transitively).
 
-2. application.yml: copy CHÍNH XÁC khối routes trong eureka-config.md — đủ 10 route
-   (user, court, booking, matchmaking, payment, escrow, coach, notification, event, ai),
-   tất cả dùng uri: lb://{service-name}, predicates Path đúng như rule. Eureka client config.
+2. application.yml: 10 route uri lb://{service-name} (đúng eureka-config.md) + Eureka client config.
 
-3. JwtAuthenticationFilter (GlobalFilter, order cao nhất):
-   - Bỏ qua các path public: /api/auth/**, /actuator/health.
-   - Với path còn lại: lấy Bearer token, verify chữ ký + hạn (HS256, secret từ env JWT_SECRET).
-   - Check Redis key "session:blacklist:{jti}" (redis-patterns.md) — nếu tồn tại -> 401.
-   - Hợp lệ: forward downstream 2 header X-User-Id và X-User-Roles (đọc từ claims).
-   - Token thiếu/sai/hết hạn -> trả 401 ngay tại Gateway, không route tiếp.
+3. JwtAuthenticationFilter (GlobalFilter, Ordered.HIGHEST_PRECEDENCE — chạy trước cả rate limiter):
+   - Bỏ qua public path: /api/auth/**, /actuator/**.
+   - Path còn lại: lấy Bearer token, verify chữ ký + hạn qua JwtUtil (HS256, secret từ env JWT_SECRET).
+   - Check Redis "session:blacklist:{jti}" (redis-patterns.md) — tồn tại -> 401 (FAIL-OPEN nếu Redis chết).
+   - Hợp lệ: forward NGUYÊN VẸN header `Authorization: Bearer` xuống downstream (để service re-validate);
+     KHÔNG emit X-User-Id/X-User-Roles. userId chỉ stash vào exchange-attribute nội bộ để key rate-limit.
+   - Token thiếu/sai/hết hạn/bị thu hồi -> 401 JSON {code,message,timestamp} ngay tại Gateway,
+     codes: TOKEN_MISSING / TOKEN_EXPIRED / TOKEN_INVALID / TOKEN_REVOKED.
 
-4. RateLimitFilter (GlobalFilter sau JWT filter):
-   - Redis INCR key "rate_limit:{userId}" TTL 60s (redis-patterns.md), max 100 req/phút.
-   - Vượt -> 429 với ErrorResponse { code:"RATE_LIMIT_EXCEEDED" }.
+4. Rate limit = built-in `RequestRateLimiter` (KHÔNG custom INCR). Trong GatewayConfig:
+   - @Bean RedisRateLimiter(replenishRate=2, burstCapacity=100, requestedTokens=1)  ← token-bucket ≈ "~100/min"
+   - @Bean KeyResolver userKeyResolver: key = userId (từ exchange-attribute), fallback client IP cho path public.
+   - application.yml `default-filters: RequestRateLimiter` (#{@redisRateLimiter} + #{@userKeyResolver}) áp cho cả 10 route.
+   - Vượt -> 429 (body RỖNG — đánh đổi đã chấp nhận khi chọn limiter built-in).
 
-Gateway là single auth boundary — service phía sau KHÔNG re-validate JWT (rbac-security.md).
+Auth = DEFENSE-IN-DEPTH: gateway verify + service phía sau CŨNG re-validate JWT (rbac-security.md mới).
+Token là nguồn danh tính DUY NHẤT — không truyền/không tin header identity.
 ```
 
-**Định nghĩa Done**:
+**Định nghĩa Done** (verified 7/7):
 ```bash
+# ⚠️ Chạy mvn TỪ THƯ MỤC ROOT — parent pom pin workingDirectory=${session.executionRootDirectory}
+#    để spring-dotenv đọc .env ở root (nếu không, JWT_SECRET không resolve -> context chết).
 mvn -pl api-gateway spring-boot:run
-curl -i http://localhost:3000/api/courts   # → 503 (chưa có court-service) = route ĐÚNG
-curl -i http://localhost:3000/api/bookings # → 401 (thiếu JWT) = filter ĐÚNG
+curl -i http://localhost:3000/api/courts/x   # → 503 (chưa có court-service) = route ĐÚNG
+curl -i http://localhost:3000/api/bookings   # → 401 TOKEN_MISSING (thiếu JWT) = filter ĐÚNG
+curl -i http://localhost:3000/actuator/health # → 200 (public, skip JWT)
+# Token hợp lệ -> qua auth (503 no-instance, KHÔNG 401). Blacklist jti trong Redis -> 401 TOKEN_REVOKED.
+# Bắn > burstCapacity (100) request/userId -> một số request trả 429 (body rỗng).
 ```
 
 ---
@@ -450,7 +464,7 @@ curl -i http://localhost:3000/api/bookings # → 401 (thiếu JWT) = filter ĐÚ
 Tasks:
 - [ ] Entity: `User`, `Role`, `UserRole`, `AuditLog`
 - [ ] register / verify-email / login / refresh / logout
-- [ ] Gateway header filter (không re-validate JWT)
+- [ ] `JwtAuthFilter` per-service: **re-validate** Bearer token bằng `common-security` `JwtUtil` (defense-in-depth)
 
 **Prompt Claude Code**:
 ```
@@ -472,15 +486,17 @@ ENDPOINT (base /api/auth, error shape { code, message, timestamp }):
   gửi email qua SendGrid. Rate limit Redis "rate_limit:register:{ip}" TTL 3600s max 5.
 - GET /verify-email?token=: đọc Redis token (single-use, delete sau khi đọc),
   set isEmailVerified=true.
-- POST /login: verify credential -> access token JWT HS256 TTL 15m (claims: sub=userId,
-  roles, jti) + refresh token TTL 30d (lưu BCrypt hash vào users.refresh_token_hash,
-  trả về cookie HttpOnly SameSite=Strict).
+- POST /login: verify credential -> access token JWT HS256 TTL 15m + refresh token TTL 30d
+  (lưu BCrypt hash vào users.refresh_token_hash, trả về cookie HttpOnly SameSite=Strict).
+  ⚠️ Claims PHẢI khớp hợp đồng `common-security` `JwtUtil`: sub=userId(UUID), roles=List<String>
+  (claim name "roles" = JwtUtil.CLAIM_ROLES, vd ["ROLE_USER"]), jti=UUID — sai thì gateway đọc lệch.
 - POST /refresh: đọc refresh cookie, so hash -> cấp access token mới.
 - POST /logout: thêm jti vào Redis "session:blacklist:{jti}" TTL = thời gian còn lại của token.
 
-SECURITY (rbac-security.md "Spring Security Config per service"):
-- GatewayHeaderAuthFilter: đọc X-User-Id + X-User-Roles -> dựng Authentication.
-  KHÔNG re-validate JWT. csrf disable, session STATELESS, /actuator/health permitAll.
+SECURITY (rbac-security.md "Spring Security Config per service" — DEFENSE-IN-DEPTH):
+- JwtAuthFilter: RE-VALIDATE Bearer token bằng common-security JwtUtil (parseAndValidate) ->
+  dựng Authentication TỪ CLAIMS (sub=userId, roles). KHÔNG trust header X-User-Id/X-User-Roles
+  (gateway không gửi). csrf disable, session STATELESS, /actuator/health permitAll.
 - Bean @authService.isEmailVerified(authentication) cho @PreAuthorize dùng sau.
 
 Test (java-spring.md naming methodName_scenario_expectedResult): register, verify, login happy path.
@@ -502,7 +518,7 @@ Service phức tạp nhất Week 1 → theo **Công thức Agent Team** (§ "Age
 2. **Phase nền** (làm 1 mình, **COMMIT** khi xong) — bảo Claude: *"dùng spring-builder làm data layer: `User`/`Role`/`UserRole`/`AuditLog` entities + repository + Flyway migration; chưa làm service/controller; commit."*
 3. **2 subagent song song** (cùng đọc code đã commit) — bảo Claude: *"dùng 2 subagent spring-builder song song:"*
    - **A** — `AuthService` (register/verify/login/refresh/logout) + JWT util (HS256, jti) + SendGrid client.
-   - **B** — `AuthController` + `GatewayHeaderAuthFilter` + bean `@authService.isEmailVerified` + tests.
+   - **B** — `AuthController` + `JwtAuthFilter` + bean `@authService.isEmailVerified` + tests.
 4. **Chốt** — chạy:
 
 ```bash
@@ -544,7 +560,7 @@ PHẦN B — court-service scaffold (DB = court_db):
 - Entity skeleton (extend BaseAuditEntity, PK UUID): Court, TimeSlot, CourtReview.
   Cross-service ref ownerId/userId là UUID thuần, comment 'ref users.id · cross-service UUID',
   KHÔNG @ManyToOne cross-service (database.md).
-- Eureka client config (eureka-config.md), GatewayHeaderAuthFilter giống user-service.
+- Eureka client config (eureka-config.md), JwtAuthFilter giống user-service.
 - Chưa cần business logic — chỉ cần service start + register Eureka UP.
 
 Verify: Eureka dashboard hiện user-service và court-service đều UP.

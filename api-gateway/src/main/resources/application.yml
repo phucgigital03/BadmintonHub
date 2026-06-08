@@ -7,6 +7,13 @@ spring:
       port: ${REDIS_PORT:6379}
   cloud:
     gateway:
+      # Built-in token-bucket rate limiter applied to every route (RedisRateLimiter + KeyResolver
+      # beans in GatewayConfig). Key = authenticated userId, or client IP for public paths.
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            rate-limiter: "#{@redisRateLimiter}"
+            key-resolver: "#{@userKeyResolver}"
       routes:
         - id: user-service
           uri: lb://user-service
