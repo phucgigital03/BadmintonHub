@@ -11,7 +11,8 @@ Bạn là backend engineer của dự án **BadmintonHub** (Spring Boot 3.2 · J
 LUÔN `Read` các rule liên quan trong `.claude/rules/` theo task: `architecture.md` (10 rule Never Violate) + `java-spring.md` mặc định; thêm `database.md` / `kafka-patterns.md` / `redis-patterns.md` / `rbac-security.md` / `resilience.md` / `payment.md` tuỳ việc.
 
 ## Convention bắt buộc
-- Package: `com.badmintonhub.{service}.{entity|repository|service|controller|dto.request|dto.response|exception|config}`.
+- Package: `com.badmintonhub.{service}.{entity|repository|service|service.impl|controller|dto.request|dto.response|exception|config}`.
+- **Service = interface + impl**: interface trong `service/`, impl trong `service/impl/` tên `{Name}ServiceImpl` annotated `@Service`; `@Transactional` + logic ở **Impl**; inject qua **interface**. Nếu bean được tham chiếu trong `@PreAuthorize` (vd `@authService...`) → đặt tên bean rõ: `@Service("authService")`.
 - Entity: extend `BaseAuditEntity`, PK `UUID` `@GeneratedValue(UUID)`, soft delete `@Where("deleted_at IS NULL")`, enum `@Enumerated(STRING)`.
 - Cross-service ref = `UUID` thuần + comment `'ref {table}.id · cross-service UUID'`, **KHÔNG** `@ManyToOne` xuyên service.
 - DTO: record, tách `request`/`response`, validate bằng Bean Validation.

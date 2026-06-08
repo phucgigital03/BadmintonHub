@@ -13,7 +13,8 @@ com.badmintonhub.{service-name}.{domain}
 
 Examples:
   com.badmintonhub.booking.entity.Booking
-  com.badmintonhub.booking.service.BookingService
+  com.badmintonhub.booking.service.BookingService          (interface — the contract)
+  com.badmintonhub.booking.service.impl.BookingServiceImpl (@Service implementation)
   com.badmintonhub.booking.controller.BookingController
   com.badmintonhub.booking.dto.request.CreateBookingRequest
   com.badmintonhub.booking.dto.response.BookingResponse
@@ -88,9 +89,25 @@ public class BookingController {
 
 ## Service Layer
 
-- All `@Transactional` at service layer — never in controllers
-- Business logic only in services — never in controllers or repositories
-- For distributed operations: acquire Redis lock → business logic → release lock
+- **Interface + impl split**: declare the contract as an **interface** in `service/`, put the implementation in `service/impl/` as `{Name}ServiceImpl` annotated `@Service`. Controllers and other services inject the **interface** (by type), never the Impl.
+- `@Transactional` and all business logic live in the **Impl** — never in the interface, controllers, or repositories.
+- For distributed operations: acquire Redis lock → business logic → release lock (in `finally`).
+- **SpEL bean-name caveat**: if a method is referenced by name in `@PreAuthorize` (e.g. `@authService.isEmailVerified(authentication)` for rule #10), annotate the impl with the explicit bean name — `@Service("authService")` — so the documented name resolves regardless of the `*Impl` class name.
+
+```java
+public interface BookingService {
+    BookingResponse create(CreateBookingRequest req);
+}
+
+// service/impl/BookingServiceImpl.java
+@Service
+@RequiredArgsConstructor
+public class BookingServiceImpl implements BookingService {
+    @Override
+    @Transactional
+    public BookingResponse create(CreateBookingRequest req) { ... }
+}
+```
 
 ## API Conventions
 
