@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* ── BadmintonHub brand theme (alobo.vn style: dark green + gold) ──────────── */
+@theme {
+  --color-brand-bg: #0e3a29;        /* page background — deep forest green */
+  --color-brand-bg2: #0a2e20;       /* darker gradient stop */
+  --color-brand-panel: #2e7a51;     /* card / panel green */
+  --color-brand-panel2: #256a45;    /* nested panel */
+  --color-brand-header: #0c3322;    /* top header bar */
+  --color-brand-gold: #d9a93e;      /* primary CTA (amber/gold) */
+  --color-brand-gold-dark: #c08f2c; /* CTA hover */
+  --color-brand-accent: #f1ca4d;    /* yellow accent text (titles, prices) */
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 50% -10%, var(--color-brand-panel) 0%, transparent 55%),
+      linear-gradient(180deg, var(--color-brand-bg) 0%, var(--color-brand-bg2) 100%);
+    background-attachment: fixed;
+    color: #fff;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
