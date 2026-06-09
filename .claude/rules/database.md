@@ -22,6 +22,8 @@ Each service owns exactly one database. No shared tables. No cross-database JOIN
 | event-service | event_db | PostgreSQL |
 | notification-service | notification_db | MongoDB |
 
+> **Entity model notes**: `court_db` owns `clubs` (venue · 1 CLB) → `courts` (physical *Sân*) → `time_slots`, plus `court_pricing_rules` (multi-dimensional price) and `club_reviews`. `booking_db` models an order as a **header** (`bookings`) + **N line items** (`booking_items`, one atomic 30-min slot each).
+
 ## Cross-Service References
 
 Cross-service IDs are stored as plain `UUID` columns — **no FK constraint, no JPA relationship**.
@@ -75,7 +77,11 @@ Cleanup scheduler: delete rows older than 7 days (`@Scheduled(cron = "0 0 3 * * 
 
 ## Snapshot Fields
 
-`matches.court_price` = snapshot of `courts.price_per_hour × duration` at the moment the match is created. **Never** update it afterward, never read live from court-service during match operations.
+Price/time is **looked up from court-service once, then frozen** on the owning record. Never re-read live from court-service afterward.
+
+- `matches.court_price` = snapshot of the applicable `court_pricing_rules.price_per_hour × duration` at the moment the match is created. Immutable afterward.
+- `booking_items.price` (+ `court_name`, `start_time`, `end_time`) = snapshot of the matching `court_pricing_rules` row for that 30-min cell, captured **at booking time**.
+- `bookings.total_price` = `SUM(booking_items.price)` for the order. `bookings.earliest_start_time` = snapshot of the earliest item's start — the reference point for the cancellation policy.
 
 ## State Machines
 
@@ -84,7 +90,9 @@ Cleanup scheduler: delete rows older than 7 days (`@Scheduled(cron = "0 0 3 * * 
 PENDING → CONFIRMED → COMPLETED
         ↘ CANCELLED
 ```
-Cancellation refund policy: >24h = 100%, 2–24h = 50%, <2h = 0%
+A booking is a **header** (`bookings`) + **N atomic 30-min line items** (`booking_items`, one `time_slots` row each). The whole order is **one payment** and is cancelled **atomically** (all items or none).
+
+Cancellation refund policy: reference point = `bookings.earliest_start_time`; refund = % × `bookings.total_price` where >24h = 100%, 2–24h = 50%, <2h = 0%.
 
 ### `matches.status`
 ```
@@ -117,7 +125,9 @@ All entities must have `created_at` and `updated_at` via `BaseAuditEntity` from 
 
 ## Index Guidelines
 
-- Index all UUID columns used as cross-service references (`user_id`, `match_id`, etc.)
+- Index all UUID columns used as cross-service references (`user_id`, `club_id`, `match_id`, etc.)
 - Index `status` columns on high-query tables (`payments`, `bookings`, `matches`)
 - Composite index on `(court_id, date, status)` for `time_slots` — frequent slot availability queries
-- Unique constraint: `court_reviews.booking_id`, `coach_reviews.enrollment_id` (1 review per booking/enrollment)
+- Index `booking_items(booking_id)` and `booking_items(slot_id)` — order line items + slot reservation lookups
+- Index `clubs(district, is_active)` and `courts(club_id)` — venue search + sân listing
+- Unique constraint: `court_pricing_rules(club_id, sport, day_type, start_time, customer_type)` (one price per dimension), `club_reviews.booking_id`, `coach_reviews.enrollment_id` (1 review per booking/enrollment)

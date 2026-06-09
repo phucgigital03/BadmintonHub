@@ -10,15 +10,16 @@ alwaysApply: false
 
 | Key Pattern | TTL | Purpose | Service |
 |---|---|---|---|
-| `lock:slot:{slotId}` | 5s | Distributed lock — slot booking | booking-service, court-service |
-| `lock:slot:{slotId}:match_create` | 10min | Slot held while Host awaits payment proof confirmation | matchmaking-service |
-| `lock:match:{matchId}` | 5s | Distributed lock — match joining (prevents race on last slot) | matchmaking-service |
+| `lock:slot:{slotId}` | 5s | Distributed lock — 1 ô 30' khi đặt. Booking nhiều ô → khoá **TẤT CẢ** `slotId` trong 1 `@Transactional` (1 ô fail → rollback cả đơn) | booking-service, court-service |
+| `lock:slot:{slotId}:match_create` | 10min | Mỗi ô 30' match giữ (N ô/trận, qua `match_slots`) trong lúc Host chờ STAFF confirm proof | matchmaking-service |
+| `lock:match:{matchId}` | 5s | Distributed lock — match joining (prevents race on last player slot) | matchmaking-service |
 | `payment:countdown:{paymentId}` | 10min | Payment screen countdown end time (ISO timestamp value) | payment-service |
-| `match:{matchId}:slots` | none | Atomic slot counter — `INCR`/`DECR` for real-time count | matchmaking-service |
+| `match:{matchId}:slots` | none | Atomic counter — số **NGƯỜI chơi** (`filled_slots` ≤ `total_slots`) · `INCR`/`DECR`. KHÁC bảng `match_slots` (ô thời gian 30') | matchmaking-service |
+| `event:{eventId}:sold` | none | Atomic counter — số **vé đã bán** (`tickets_sold` ≤ `total_tickets`) · `INCR`/`DECR` chống oversell | event-service |
 | `session:blacklist:{jti}` | = JWT TTL | Revoked JWT access token IDs | user-service |
 | `email:verify:{token}` | 24h | Email verification token → userId | user-service |
 | `password:reset:{token}` | 1h | Password reset token → userId | user-service |
-| `courts:{district}:{type}:{date}` | 60s | Cached court search results | court-service |
+| `clubs:{district}:{sport}` | 60s | Cached **club** geo-search results (venue list theo quận + môn) | court-service |
 | `rate_limit:{userId}` | 60s | Global rate limit *intent* — api-gateway actually uses Spring Cloud Gateway's built-in `RequestRateLimiter` (token-bucket); live keys are `request_rate_limiter.{route}.{tokens\|timestamp}`, keyed by userId (or client IP on public paths) | api-gateway |
 | `rate_limit:join:{userId}` | 60s | Max 5 join attempts/min | matchmaking-service |
 | `rate_limit:proof:{userId}` | 300s | Max 3 proof uploads per 5 min | payment-service |

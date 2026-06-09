@@ -609,9 +609,10 @@ PHẦN A — user-service bổ sung:
 PHẦN B — court-service scaffold (DB = court_db):
 - Scaffold qua `/new-service court-service` TRƯỚC (Vòng đời bước 3) — sinh sẵn pom, Eureka client,
   `SecurityFilterChain` + `JwtAuthFilter` re-validate (common-security JwtUtil), application.yml.
-- Thêm entity skeleton (extend BaseAuditEntity, PK UUID): Court, TimeSlot, CourtReview.
-  Cross-service ref ownerId/userId là UUID thuần, comment 'ref users.id · cross-service UUID',
-  KHÔNG @ManyToOne cross-service (database.md).
+- Thêm entity skeleton (extend BaseAuditEntity, PK UUID): Club (venue), Court (1 Sân vật lý),
+  CourtPricingRule, TimeSlot, ClubReview.
+  Cross-service ref createdBy/userId là UUID thuần, comment 'ref users.id · cross-service UUID',
+  KHÔNG @ManyToOne cross-service (database.md). FK trong cùng court_db (clubId, courtId) thì bình thường.
 - Chưa cần business logic — chỉ cần service start + register Eureka UP.
 
 Verify: Eureka dashboard hiện user-service và court-service đều UP.
@@ -643,97 +644,117 @@ curl -X POST http://localhost:3000/api/auth/login -d '{"email":"test@test.com","
 
 ## Week 2 — Booking Core
 
-### Day 6: court-service — Courts + Slots
+### Day 6: court-service — Clubs + Courts (Sân) + Pricing + Slots
 
-**Mục tiêu**: CRUD courts, slot auto-generation, geo search.
+**Mục tiêu**: CRUD clubs (venue) + courts (Sân) + bảng giá đa chiều, slot **30'** auto-gen, geo search ở mức **CLB**.
+> 📄 Spec chi tiết: `UC_Visual_Day_Booking.md` (grid hàng=Sân × cột=ô 30', giá tra `court_pricing_rules`).
 
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/java-spring.md, .claude/rules/database.md,
 .claude/rules/redis-patterns.md, .claude/rules/resilience.md, .claude/rules/rbac-security.md.
+Spec: UC_Visual_Day_Booking.md + ERD_All_Services.md (court_db block).
 
-Implement đầy đủ court-service (court_db):
+Implement đầy đủ court-service (court_db) theo ERD mới (1 CLB ──< N Sân ──< N ô 30'):
 
-ENTITY: Court (name, address, district, lat, lng, type, pricePerHour, isActive, ownerId UUID
-cross-service, imageUrls), TimeSlot (courtId, date, startTime, endTime, status enum
-AVAILABLE/RESERVED/BLOCKED/EVENT), CourtReview (courtId, bookingId UNIQUE, userId, rating, comment).
+ENTITY (extend BaseAuditEntity, PK UUID):
+- Club (venue): name, address, district, latitude, longitude, images(JSON), rating, totalReviews,
+  isActive, createdBy UUID cross-service ('ref users.id').
+- Court (1 Sân vật lý): clubId FK→Club, courtNumber ("Sân 1".."Sân N"), sport enum PICKLEBALL/BADMINTON,
+  type enum SYNTHETIC/WOOD/CONCRETE, isActive.
+- CourtPricingRule: clubId FK, sport, dayType enum WEEKDAY/WEEKEND, startTime, endTime,
+  customerType enum FIXED/WALK_IN, pricePerHour. UNIQUE(clubId,sport,dayType,startTime,customerType).
+- TimeSlot (ô 30'): courtId FK→Court, date, startTime, endTime, status enum AVAILABLE/RESERVED/BLOCKED/EVENT,
+  bookingId/matchId/enrollmentId/eventId UUID nullable (back-ref holder).
+- ClubReview: clubId, bookingId UNIQUE, userId, rating, comment (review VENUE — KHÔNG còn court_reviews).
 
 ENDPOINT:
-- POST /api/courts (@PreAuthorize hasAnyRole('STAFF','ADMIN')): tạo court + upload ảnh Cloudinary.
-- GET /api/courts?lat=&lng=&radius=&district=&type=&date=: geo search (Haversine), filter,
-  cache Redis "courts:{district}:{type}:{date}" TTL 60s (redis-patterns.md). Trả Page<T>.
-- GET /api/courts/{id}/slots?date=: list slot theo ngày kèm status.
-- GET /api/courts/{id}/slots/{slotId}: chi tiết 1 slot (cho Feign từ booking-service).
-- POST /api/courts/{id}/generate-slots (STAFF): manual trigger sinh slot.
-- PATCH /api/courts/slots/{id}/block (STAFF): set slot BLOCKED.
+- POST /api/clubs (STAFF/ADMIN): tạo CLB + ảnh Cloudinary. POST /api/courts (STAFF/ADMIN): thêm Sân vào CLB.
+- GET /api/clubs?lat=&lng=&radius=&district=&sport=: geo search CLB (Haversine),
+  cache Redis "clubs:{district}:{sport}" TTL 60s. Trả Page<T>.
+- GET /api/clubs/{id}: thông tin CLB. GET /api/clubs/{id}/courts: danh sách Sân.
+- POST /api/clubs/{id}/pricing (STAFF tạo) · GET /api/clubs/{id}/pricing?sport= (public đọc): court_pricing_rules.
+- GET /api/clubs/{id}/slots?date=&sport=: TẤT CẢ ô 30' của mọi Sân theo ngày + price mỗi ô
+  (tra court_pricing_rules theo dayType + khung giờ + customerType=WALK_IN).
+- GET /api/courts/{courtId}/slots/{slotId}: chi tiết 1 ô + giá (cho Feign từ booking/matchmaking-service).
+- POST /api/clubs/{id}/generate-slots (STAFF): manual sinh slot. PATCH /api/courts/slots/{id}/block (STAFF): BLOCKED.
 
 SCHEDULER (resilience.md "Slot Auto-Generation"):
-- @Scheduled(cron="0 0 0 * * *"): với mọi court isActive=true, sinh slot 30 ngày tới
-  (now+1 .. now+30), khung 06:00–22:00, mỗi slot 60 phút, status AVAILABLE.
+- @Scheduled(cron="0 0 0 * * *"): mọi Court isActive=true, sinh ô 30 ngày tới (now+1..now+30),
+  khung 05:00–22:00, mỗi ô = 30 phút, status AVAILABLE.
 
-INDEX (database.md): composite (court_id, date, status) trên time_slots; index ownerId.
-Unique constraint court_reviews.booking_id.
+INDEX (database.md): time_slots(court_id,date,status); clubs(district,is_active); courts(club_id);
+court_pricing_rules UNIQUE(...); club_reviews.booking_id UNIQUE.
 
-Test: tạo court -> generate-slots -> query theo date thấy slot AVAILABLE.
+Test: tạo Club → Court → pricing rule → generate-slots → GET /api/clubs/{id}/slots?date= thấy ô 30' AVAILABLE + giá đúng.
 ```
 
-**Định nghĩa Done**: tạo court → slots auto-gen → `GET /api/courts/{id}/slots?date=` trả slot AVAILABLE.
+**Định nghĩa Done**: tạo CLB → thêm Sân → bảng giá → slots auto-gen → `GET /api/clubs/{id}/slots?date=` trả ô **30'** AVAILABLE kèm giá.
 
 ---
 
-### Day 7: booking-service — Reservation + distributed lock
+### Day 7: booking-service — Reservation (header + items) + distributed lock
 
-**Mục tiêu**: Book slot với Redis lock, không race condition.
+**Mục tiêu**: 1 đơn (header) = **N ô 30'** (items, nhiều Sân) với Redis lock từng ô, không race condition.
+> 📄 Spec chi tiết: `UC_Visual_Day_Booking.md` (header `bookings` + `booking_items`, khoá TẤT CẢ ô, huỷ nguyên đơn).
 
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/java-spring.md, .claude/rules/redis-patterns.md,
 .claude/rules/resilience.md, .claude/rules/kafka-patterns.md, .claude/rules/database.md,
-.claude/rules/rbac-security.md.
+.claude/rules/rbac-security.md. Spec: UC_Visual_Day_Booking.md.
 
-Implement booking-service (booking_db):
+Implement booking-service (booking_db) theo model HEADER + ITEMS:
 
-ENTITY: Booking (userId UUID, courtId UUID, slotId UUID — tất cả cross-service UUID,
-status enum PENDING/CONFIRMED/COMPLETED/CANCELLED, amount, refundAmount).
-ProcessedEvent (event_id PK varchar, processedAt) — idempotency guard (database.md).
+ENTITY:
+- Booking (HEADER): userId UUID, clubId UUID (cross-service), customerName, customerPhone, note,
+  customerType enum FIXED/WALK_IN (DEFAULT WALK_IN), bookingDate, totalPrice (=Σ items.price),
+  earliestStartTime (snapshot — mốc tính chính sách hoàn), refundAmount,
+  status enum PENDING/CONFIRMED/COMPLETED/CANCELLED, cancelReason, cancelledBy UUID.
+- BookingItem: bookingId FK→Booking, courtId UUID, slotId UUID UNIQUE (1 ô 30' ↔ 1 item),
+  courtName/startTime/endTime/price — SNAPSHOT lúc đặt (tra court_pricing_rules).
+- ProcessedEvent (event_id PK varchar, processedAt) — idempotency guard (database.md).
 
 ENDPOINT:
 - POST /api/bookings (@PreAuthorize "hasAnyRole('USER','COACH') and
   @authService.isEmailVerified(authentication)" — rule #10):
-  1. acquireRedisLock "lock:slot:{slotId}" TTL 5s (redis-patterns.md).
-  2. Feign CourtServiceClient (lb://court-service) GET /api/courts/{courtId}/slots/{slotId}
-     validate slot AVAILABLE. KHÔNG hardcode http://localhost.
-  3. insert Booking PENDING, releaseRedisLock trong finally.
-  Bọc acquireRedisLock bằng @CircuitBreaker(name="redis", fallbackMethod="acquireDbLock")
-  (resilience.md) — fallback DB SELECT FOR UPDATE.
-- PATCH /api/bookings/{id}/cancel: cancellation policy (database.md):
-  >24h trước slot = refund 100%, 2–24h = 50%, <2h = 0%. Set status CANCELLED + refundAmount.
-- GET /api/bookings (STAFF/ADMIN list all; user xem own) — @PreAuthorize theo rbac-security.md.
+  Body { clubId, date, customerName, customerPhone, note, items:[{courtId, slotId}, ...] }.
+  Trong 1 @Transactional:
+  1. acquireRedisLock "lock:slot:{slotId}" TTL 5s cho TỪNG slotId — 1 ô fail → rollback + release TOÀN BỘ.
+  2. Feign court-service (lb://court-service) GET /api/courts/{courtId}/slots/{slotId} validate AVAILABLE
+     + lấy price → snapshot vào từng BookingItem. KHÔNG hardcode http://localhost.
+  3. insert Booking(HEADER, PENDING, totalPrice=Σ, earliestStartTime=min) + N BookingItem.
+  4. payment-service initiate (amount=totalPrice) → bank QR.
+  release lock trong finally. Bọc acquireRedisLock bằng @CircuitBreaker(name="redis",
+  fallbackMethod="acquireDbLock") (resilience.md) — fallback DB SELECT FOR UPDATE.
+- PATCH /api/bookings/{id}/cancel: cancellation theo earliestStartTime (database.md):
+  >24h=100% / 2–24h=50% / <2h=0% × totalPrice. Set status CANCELLED + refundAmount.
+- GET /api/bookings (STAFF/ADMIN all; user own) — @PreAuthorize theo rbac-security.md.
 
 KAFKA CONSUMER (kafka-patterns.md, manual ack, idempotency guard):
-- @KafkaListener topic "payment.player.confirmed" groupId "booking-service":
-  check ProcessedEvent(record.key()) trước; nếu chưa -> Booking CONFIRMED, gọi court-service
-  set slot RESERVED, save ProcessedEvent, ack. Lỗi -> KHÔNG ack (để retry).
-- Sau confirm, publish "booking.slot.confirmed" (consumer: matchmaking, notification, escrow).
-- KafkaConfig: DefaultErrorHandler exponential backoff 2s/4s/8s, 3 retries, DLT (resilience.md).
+- @KafkaListener "payment.player.confirmed" groupId "booking-service":
+  check ProcessedEvent(record.key()) trước; nếu chưa → Booking CONFIRMED, gọi court-service set
+  MỌI slot trong đơn → RESERVED + booking_id (header), save ProcessedEvent, ack. Lỗi → KHÔNG ack.
+- Sau confirm, publish "booking.slot.confirmed" (slotIds[]) — consumer matchmaking, notification, escrow.
+- KafkaConfig: DefaultErrorHandler backoff 2s/4s/8s, 3 retries, DLT (resilience.md).
 
-Test: 2 request đồng thời cùng slotId -> chỉ 1 thành công, 1 nhận CONFLICT.
+Test: 2 request đồng thời trùng 1 ô → chỉ 1 PENDING, 1 CONFLICT (cả đơn rollback).
 ```
 
-**Định nghĩa Done**: 2 concurrent booking cùng slot → đúng 1 PENDING; consume `payment.player.confirmed` → CONFIRMED idempotent.
+**Định nghĩa Done**: 2 concurrent booking trùng 1 ô → đúng 1 PENDING (rollback nguyên đơn); consume `payment.player.confirmed` → CONFIRMED idempotent (mọi slot RESERVED).
 
 **🚀 Bản nâng cấp — Pro Workflow (Claude Code)**
 
-booking-service = lock + Kafka, hai tầng **phụ thuộc nhau** → tuần tự (KHÔNG song song). Theo **Công thức Agent Team**:
+booking-service = lock nhiều ô + Kafka, hai tầng **phụ thuộc nhau** → tuần tự (KHÔNG song song). Theo **Công thức Agent Team**:
 
-1. **Plan** — `/plan-feat booking-service reservation + distributed lock` → duyệt.
-2. **Phase nền** (**COMMIT** khi xong) — *"dùng spring-builder: `Booking` + `ProcessedEvent` entities + `BookingService` (Redis lock + Feign `lb://court-service` validate slot) + `BookingController` + cancellation policy; commit."*
-3. **Phase Kafka** (đọc entity Bước 2 từ đĩa — cần entity nên KHÔNG song song) — *"dùng spring-builder: `KafkaConfig` (DLT + backoff) + consumer `payment.player.confirmed` (idempotency guard) + producer `booking.slot.confirmed`."*
+1. **Plan** — `/plan-feat booking-service reservation header+items + distributed lock` → duyệt.
+2. **Phase nền** (**COMMIT** khi xong) — *"dùng spring-builder: `Booking` (header) + `BookingItem` + `ProcessedEvent` entities + `BookingService` (khoá TẤT CẢ slot trong 1 @Transactional + Feign `lb://court-service` validate + price snapshot vào item) + `BookingController` + cancellation theo earliest_start_time; commit."*
+3. **Phase Kafka** (đọc entity Bước 2 từ đĩa — cần entity nên KHÔNG song song) — *"dùng spring-builder: `KafkaConfig` (DLT + backoff) + consumer `payment.player.confirmed` (idempotency → set MỌI slot RESERVED) + producer `booking.slot.confirmed`."*
 4. **Test bắt buộc + chốt** — chạy:
 
 ```bash
-/race-test POST /api/bookings           # 2 booking đồng thời cùng slotId → đúng 1 PENDING, 1 CONFLICT
-/code-review                            # Redis lock release trong finally · @CircuitBreaker fallback DB lock · ack sau khi xử lý xong
+/race-test POST /api/bookings           # 2 booking đồng thời trùng 1 ô → đúng 1 PENDING, 1 CONFLICT (rollback cả đơn)
+/code-review                            # khoá TẤT CẢ ô trong 1 tx · 1 ô fail rollback · price snapshot vào item · @CircuitBreaker fallback
 /kafka-trace payment.player.confirmed   # consumer nhận đúng, không LAG, không rớt .DLT
 /done-check booking-service
 ```
@@ -761,7 +782,7 @@ Implement payment-service (payment_db):
 
 ENTITY: BankAccount (bankName, accountNumber, accountName, qrImageUrl),
 Payment (userId UUID, paymentType enum BOOKING/MATCH_HOST/MATCH_PLAYER/COACH_ENROLLMENT/EVENT_TICKET,
-referenceId UUID — booking/match/enrollment liên quan, matchId UUID nullable, amount,
+bookingId/matchId/enrollmentId UUID nullable — ref entity liên quan (cross-service), amount,
 orderCode SERIAL, status enum PENDING/PROOF_SUBMITTED/CONFIRMED/EXPIRED/REFUNDED, expiresAt,
 refundAmount), PaymentProof (paymentId, imageUrl, uploadedAt), ManualRefund (paymentId,
 amount, toBankName, toAccountNumber, toAccountName, refundNote, executedBy).
@@ -853,40 +874,40 @@ gửi trùng event_id -> không double-count (idempotency).
 
 ---
 
-### Day 10: integration test Week 2 + court reviews
+### Day 10: integration test Week 2 + club reviews
 
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/java-spring.md (Testing), .claude/rules/database.md, .claude/rules/redis-patterns.md.
 
-PHẦN A — court review:
-- POST /api/courts/{id}/reviews (@PreAuthorize hasAnyRole('USER','COACH')):
-  chỉ cho review khi có booking COMPLETED của user đó cho court này; unique 1 review / booking
-  (court_reviews.booking_id UNIQUE — database.md). Cập nhật rating trung bình của court.
+PHẦN A — club review (review VENUE — KHÔNG còn court review):
+- POST /api/clubs/{id}/reviews (@PreAuthorize hasAnyRole('USER','COACH')):
+  chỉ cho review khi user có booking COMPLETED tại CLB này; unique 1 review / booking
+  (club_reviews.booking_id UNIQUE — database.md). Cập nhật clubs.rating + totalReviews.
 
 PHẦN B — integration test (@SpringBootTest + @Testcontainers PostgreSQL + Redis,
 KHÔNG dùng H2 — java-spring.md):
-Viết test mô phỏng end-to-end luồng đặt sân:
-  1. STAFF tạo court -> generate slots.
-  2. User (email verified) POST /api/bookings -> Payment PENDING + bank QR.
+Viết test mô phỏng end-to-end luồng đặt sân (header + items):
+  1. STAFF tạo Club + Court + pricing rule -> generate slots (30').
+  2. User (email verified) POST /api/bookings { clubId, items:[{courtId,slotId}×N] } -> Booking PENDING + N items + bank QR.
   3. POST proof -> PROOF_SUBMITTED.
   4. STAFF confirm -> Kafka payment.player.confirmed.
-  5. booking-service consume -> Booking CONFIRMED, slot RESERVED.
+  5. booking-service consume -> Booking CONFIRMED, MỌI slot RESERVED + booking_id.
   6. escrow ghi transaction đúng.
-Assert mỗi bước + verify Kafka event propagate đúng (dùng embedded Kafka hoặc Testcontainers Kafka).
+Assert mỗi bước + verify Kafka event propagate đúng (embedded Kafka hoặc Testcontainers Kafka).
 Fix mọi bug phát hiện được.
 ```
 
-**Định nghĩa Done**: integration test xanh; review chỉ tạo được sau booking COMPLETED.
+**Định nghĩa Done**: integration test xanh; club review chỉ tạo được sau booking COMPLETED (unique theo booking).
 
 ---
 
 ### Week 2 Checkpoint
 
 ```
-User đăng ký → verify email → tìm court → xem slot → đặt slot
-→ nhận bank QR + countdown → upload proof → STAFF confirm
-→ booking CONFIRMED, slot blocked, escrow HOLDING
+User đăng ký → verify email → tìm CLB → xem grid Sân × ô 30' → chọn nhiều ô (1+ Sân)
+→ đặt (booking header + items) → nhận bank QR + countdown → upload proof → STAFF confirm
+→ booking CONFIRMED, MỌI ô RESERVED, escrow HOLDING
 ```
 
 ---
@@ -901,21 +922,25 @@ User đăng ký → verify email → tìm court → xem slot → đặt slot
 ```
 Đọc trước: .claude/rules/kafka-patterns.md (Outbox + Zombie — rule #4, #6),
 .claude/rules/redis-patterns.md, .claude/rules/resilience.md, .claude/rules/database.md,
-.claude/rules/rbac-security.md.
+.claude/rules/rbac-security.md. Spec: UC_Matchmaking.md (UC-MATCH-01).
 
-Implement matchmaking-service phần tạo match (matchmaking_db):
+Implement matchmaking-service phần tạo match (matchmaking_db) theo ERD mới (match giữ N ô 30'):
 
-ENTITY: Match (hostId UUID, courtId UUID, slotId UUID — cross-service UUID,
-courtPrice SNAPSHOT (rule #9 — chốt lúc tạo, immutable), pricePerPerson, totalSlots,
-filledSlots, skillLevel, status enum PENDING_PAYMENT/OPEN/FULL/COMPLETED/CANCELLED),
-MatchParticipant (matchId, userId UUID, role enum HOST/PLAYER, joinedAt),
+ENTITY: Match (clubId UUID, courtId UUID — cross-service UUID (1 Sân),
+courtPrice SNAPSHOT (rule #9 — = Σ giá các ô từ court_pricing_rules, immutable), pricePerPerson,
+totalSlots (số NGƯỜI chơi — chẵn 2..16), filledSlots, hostId UUID, sport, format, skillRequired,
+status enum PENDING_PAYMENT/OPEN/FULL/COMPLETED/CANCELLED),
+MatchSlot (matchId FK, slotId UUID UNIQUE — N ô 30' trận giữ, ref time_slots.id),
+MatchParticipant (matchId, userId UUID, paymentId UUID nullable, joinedAt, leftAt),
 OutboxEvent (topic, payload, status enum PENDING/SENT, sentAt, createdAt).
+⚠️ Phân biệt: totalSlots/filledSlots = NGƯỜI chơi; MatchSlot = Ô THỜI GIAN 30'.
 
 ENDPOINT:
 - POST /api/matches (@PreAuthorize hasAnyRole('USER','COACH')):
-  1. acquireRedisLock "lock:slot:{slotId}:match_create" TTL 10min (redis-patterns.md).
-  2. snapshot courtPrice qua Feign court-service (chốt cứng vào Match).
-  3. tạo Match PENDING_PAYMENT + MatchParticipant(HOST).
+  Body { clubId, courtId, date, slotIds:[...], totalSlots, pricePerPerson, sport, format, skillRequired }.
+  1. acquireRedisLock "lock:slot:{slotId}:match_create" TTL 10min cho TỪNG ô (redis-patterns.md).
+  2. snapshot courtPrice = Σ giá các ô qua Feign court-service (chốt cứng vào Match).
+  3. tạo Match PENDING_PAYMENT + N MatchSlot + MatchParticipant(host).
   4. tạo Payment record type MATCH_HOST (gọi payment-service initiate).
   KHÔNG publish Kafka trực tiếp — dùng Outbox (rule #4).
 
@@ -926,11 +951,11 @@ OUTBOX (kafka-patterns.md + resilience.md):
 KAFKA CONSUMER (manual ack):
 - "payment.host.confirmed": ZOMBIE CHECK trước (rule #6 — nếu Match CANCELLED thì publish
   compensating event "match.compensate.slot" rồi return). Nếu hợp lệ: Match -> OPEN,
-  gọi court-service set slot RESERVED, Host đã ở trong participants, INCR
-  Redis "match:{matchId}:slots".
+  gọi court-service set MỌI ô (MatchSlot) -> RESERVED + match_id, Host đã ở trong participants,
+  INCR Redis "match:{matchId}:slots".
 
 SCHEDULER (resilience.md "Match Timeout"): @Scheduled(cron="0 */5 * * * *")
-PENDING_PAYMENT quá 10min -> CANCELLED, delete Redis lock:slot:{slotId}:match_create,
+PENDING_PAYMENT quá 10min -> CANCELLED, delete Redis lock:slot:{slotId}:match_create cho MỌI ô,
 publish "match.cancelled" (reason PAYMENT_TIMEOUT) qua Outbox.
 
 KafkaConfig DLT. State machine matches.status theo database.md.
@@ -944,7 +969,7 @@ Outbox + zombie là logic dễ sai NHẤT dự án → **biến thể TDD** (tes
 
 1. **Plan** — `/plan-feat matchmaking-service match creation + Outbox` → duyệt (Outbox rule #4 · zombie rule #6 · courtPrice snapshot rule #9).
 2. **test-writer TRƯỚC** (viết test, để **ĐỎ**, **COMMIT**) — *"dùng test-writer: integration test (Testcontainers + embedded Kafka): tạo match → OutboxEvent PENDING → scheduler publish → SENT; zombie event khi match CANCELLED → publish `match.compensate.slot`; chưa impl; commit."*
-3. **spring-builder impl cho XANH** (đọc test từ đĩa — tuần tự, KHÔNG song song) — *"dùng spring-builder đọc test vừa commit rồi implement cho pass: `Match`/`MatchParticipant`/`OutboxEvent` entities + `MatchService` + `OutboxPublisherScheduler` + consumer `payment.host.confirmed`."*
+3. **spring-builder impl cho XANH** (đọc test từ đĩa — tuần tự, KHÔNG song song) — *"dùng spring-builder đọc test vừa commit rồi implement cho pass: `Match`/`MatchSlot`/`MatchParticipant`/`OutboxEvent` entities + `MatchService` (giữ N ô + courtPrice snapshot) + `OutboxPublisherScheduler` + consumer `payment.host.confirmed`."*
 4. **Chốt** — chạy:
 
 ```bash
@@ -962,9 +987,10 @@ Outbox + zombie là logic dễ sai NHẤT dự án → **biến thể TDD** (tes
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/kafka-patterns.md, .claude/rules/redis-patterns.md (Atomic Slot Counter),
-.claude/rules/rbac-security.md.
+.claude/rules/rbac-security.md. Spec: UC_Matchmaking.md (UC-MATCH-03 Join Saga).
 
-Bổ sung matchmaking-service phần join (Saga):
+Bổ sung matchmaking-service phần join (Saga). LƯU Ý: counter "match:{matchId}:slots" đếm
+số NGƯỜI chơi (≤ totalSlots), KHÁC với MatchSlot (các ô 30' đã giữ từ Day 11):
 
 ENDPOINT POST /api/matches/{id}/join (@PreAuthorize "hasAnyRole('USER','COACH') and
 @authService.isEmailVerified(authentication)" — STAFF/ADMIN KHÔNG được join, rule rbac-security.md):
@@ -1066,8 +1092,10 @@ Implement coach-service (coach_db PostgreSQL + Elasticsearch):
 ENTITY: Coach (userId UUID, specialty, hourlyRate, bio, district, rating, status enum
 PENDING_APPROVAL/ACTIVE/SUSPENDED, deletedAt soft delete + @Where), CoachSchedule
 (coachId, dayOfWeek, startTime, endTime), CoachEnrollment (coachId, studentId UUID,
-status enum PENDING/CONFIRMED/COMPLETED/CANCELLED, amount), CoachReview (coachId,
-enrollmentId UNIQUE, studentId, rating, comment).
+courtId UUID nullable (ref Sân học · cross-service), totalPaid, refundAmount,
+status enum PENDING/CONFIRMED/COMPLETED/CANCELLED), EnrollmentSlot (enrollmentId FK,
+slotId UUID UNIQUE — N ô 30' buổi học giữ), CoachReview (coachId, enrollmentId UNIQUE,
+studentId, rating, comment).
 
 ELASTICSEARCH: index document Coach khi create/update; search theo specialty,
 hourlyRate range, rating, district.
@@ -1093,7 +1121,7 @@ KAFKA CONSUMER: "payment.player.confirmed" (type COACH_ENROLLMENT) -> Enrollment
 Day 14 ‖ Day 13 trong **worktree riêng** — nhớ `cp .env ../badmintonHub-coach/.env` (gitignored!). Theo **Công thức Agent Team**:
 
 1. **Plan** — `/plan-feat coach-service profiles + Elasticsearch + enrollment` → duyệt.
-2. **Phase nền** (**COMMIT** khi xong) — *"dùng spring-builder: `Coach`/`CoachSchedule`/`CoachEnrollment`/`CoachReview` entities + repos + state machine + soft delete; commit."*
+2. **Phase nền** (**COMMIT** khi xong) — *"dùng spring-builder: `Coach`/`CoachSchedule`/`CoachEnrollment`/`EnrollmentSlot`/`CoachReview` entities + repos + state machine + soft delete; commit."*
 3. **2 subagent song song** (cùng đọc entity đã commit) — bảo Claude: *"dùng 2 subagent spring-builder song song:"*
    - **A** — Elasticsearch: index document `Coach` khi create/update + search (specialty/rate range/rating/district).
    - **B** — API + Kafka: controllers (apply/approve/suspend/enroll/review + rate-limit 2/ngày) + consumer `payment.player.confirmed` type COACH_ENROLLMENT.
@@ -1181,17 +1209,20 @@ Coach: enroll → Bank QR → confirm → enrollment CONFIRMED
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/database.md (event_tickets state machine), .claude/rules/payment.md,
-.claude/rules/kafka-patterns.md, .claude/rules/frontend.md.
+.claude/rules/kafka-patterns.md, .claude/rules/frontend.md. Spec: UC_Event_Booking.md.
 
-PHẦN A — event-service (event_db):
-- Entity: Event (name, description, courtId UUID, startTime, endTime, ticketPrice, totalTickets,
-  type enum SOCIAL/COMPETITIVE), EventTicket (eventId, userId UUID, status enum
-  PENDING/CONFIRMED/CANCELLED/REFUNDED — database.md).
-- POST /api/events (@PreAuthorize hasAnyRole('STAFF','ADMIN')): tạo event + block time_slots
-  của court (status=EVENT qua court-service).
-- POST /api/events/{id}/tickets/purchase (@PreAuthorize hasAnyRole('USER','COACH')):
-  tạo Payment type EVENT_TICKET -> trả Bank QR.
-- @KafkaListener "payment.player.confirmed" (type EVENT_TICKET) -> ticket CONFIRMED (idempotent).
+PHẦN A — event-service (event_db) theo ERD mới (event ở CLB):
+- Entity: Event (clubId UUID cross-service, eventNumber SERIAL, title, format enum SOCIAL/COMPETITIVE,
+  sport, skillMin/skillMax DECIMAL (DUPR), eventDate, startTime, endTime, courtsInvolved (JSON tên Sân),
+  totalTickets, ticketsSold, pricePerTicket DECIMAL, status enum OPEN/FULL/CANCELLED/COMPLETED),
+  EventTicket (eventId, userId UUID, paymentId UUID, quantity, totalPaid DECIMAL,
+  status enum PENDING/CONFIRMED/CANCELLED/REFUNDED — database.md).
+- POST /api/events (@PreAuthorize hasAnyRole('STAFF','ADMIN')): tạo event + publish "event.created"
+  → court-service set time_slots các Sân trong courtsInvolved → status=EVENT + event_id.
+- POST /api/events/{id}/tickets (@PreAuthorize hasAnyRole('USER','COACH')):
+  Redis INCR "event:{id}:sold" (atomic) → EventTicket PENDING → Payment type EVENT_TICKET → Bank QR.
+- @KafkaListener "ticket.payment.confirmed" (type EVENT_TICKET) -> ticket CONFIRMED,
+  ticketsSold += quantity, nếu đầy → status FULL (idempotent).
 - KafkaConfig DLT.
 
 PHẦN B — ai-service stub:
