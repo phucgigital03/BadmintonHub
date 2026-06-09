@@ -8,6 +8,19 @@ alwaysApply: false
 
 Stack: React 18 · Vite · TypeScript · Tailwind CSS · Zustand · React Query · Axios · Socket.io · React Router v6
 
+## Single-club model
+
+Hệ thống quản lý **đúng 1 CLB** (venue), CLB chứa **nhiều môn** (Pickleball / Badminton). KHÔNG có directory/search nhiều CLB:
+- `/courts` = trang của **chính CLB đó** — header (tên/địa chỉ/rating) + map 1 marker + **các tile môn**
+  (`mockClub.sports`): mỗi môn có **giá riêng** + **danh sách Sân riêng**.
+- **Chọn môn** → `setCourt(clubSportToCourt(club, sport))` → `BookingTypeModal` (trực quan / sự kiện):
+  trực quan → `/courts/:id/booking?sport=X` (grid **chỉ Sân của môn đó** + giá môn đó); sự kiện → `/events`.
+- Mô hình dữ liệu: **clubs (venue) ──< courts (Sân, có `sport`) ──< time_slots (ô 30')**; giá theo `court_pricing_rules`
+  (per sport). Type FE: `Club { sports: ClubSport[] }`, `ClubSport { sport, pricePerHour, courts[] }`,
+  `Court` = booking-context (club + môn đã chọn, mang `type`/`pricePerHour`/`courts[]`).
+- ⚠️ FE tạm gọi endpoint `/api/courts` (mock 1 CLB qua `mockClub`). Khi court-service backend xong sẽ đổi sang
+  `/api/clubs` (+ `?sport=`) và tách `Club`/`Court(Sân)` đúng ERD — việc tương lai, chưa làm.
+
 ## API Client
 
 All HTTP calls go through `axiosClient.ts` — never raw `fetch` or a new Axios instance:

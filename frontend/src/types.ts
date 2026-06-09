@@ -19,17 +19,40 @@ export interface AuthResponse {
 
 export type SlotStatus = 'AVAILABLE' | 'RESERVED' | 'BLOCKED' | 'EVENT';
 
+// A single sport offered by the club, with its own price + list of physical courts (Sân).
+export interface ClubSport {
+  sport: string; // "Pickleball" | "Badminton"
+  pricePerHour: number;
+  courts: string[]; // Sân names for this sport, e.g. ["Sân 1", "Sân 2", "Sân 3"]
+}
+
+// The (single) club / venue. Holds N sports, each with its own courts + price.
+export interface Club {
+  id: string;
+  name: string;
+  address: string;
+  district: string;
+  rating: number;
+  lat: number;
+  lng: number;
+  sports: ClubSport[];
+  imageUrl?: string;
+}
+
+// "Booking context" = club + a chosen sport. Carries the sport's price + court list
+// downstream (bookingStore, grid, confirm). Built from Club + ClubSport on sport pick.
 export interface Court {
   id: string;
   name: string;
   club: string;
   address: string;
   district: string;
-  type: string; // e.g. "Pickleball"
-  pricePerHour: number;
+  type: string; // the chosen sport, e.g. "Pickleball"
+  pricePerHour: number; // price of the chosen sport
   rating: number;
   lat: number;
   lng: number;
+  courts?: string[]; // Sân names of the chosen sport (grid rows)
   imageUrl?: string;
 }
 

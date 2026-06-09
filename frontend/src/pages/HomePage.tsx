@@ -16,7 +16,7 @@ export default function HomePage() {
   const { user, clearAuth } = useAuthStore();
 
   const features: Feature[] = [
-    { to: '/courts', icon: '🏟️', title: t('nav.courts'), desc: 'Tìm sân, đặt lịch trực quan theo khung giờ.' },
+    { to: '/courts', icon: '🏟️', title: t('nav.courts'), desc: 'Đặt sân theo khung giờ, trực quan.' },
     { to: '/events', icon: '🎉', title: t('nav.events'), desc: 'Sự kiện giao lưu & giải đấu theo trình độ.' },
     { to: '/matches', icon: '🤝', title: t('nav.matches'), desc: 'Ghép trận, tham gia chơi cùng cộng đồng.' },
     { to: '/coaches', icon: '🏅', title: t('nav.coaches'), desc: 'Tìm huấn luyện viên, đăng ký học.' },

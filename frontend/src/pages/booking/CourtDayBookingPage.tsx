@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
-import { useNavigate, useParams, Link } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { courtsApi } from '../../api/courts';
-import { mockCourts, mockDayGrid } from '../../api/mockData';
+import { mockClub, clubSportToCourt, mockDayGrid } from '../../api/mockData';
 import { PageShell } from '../../components/layout/PageShell';
 import { MockBanner } from '../../components/ui/MockBanner';
 import { Button } from '../../components/ui/Button';
@@ -13,28 +13,33 @@ import { formatVnd } from '../../lib/cn';
 export default function CourtDayBookingPage() {
   const navigate = useNavigate();
   const { courtId } = useParams();
+  const [searchParams] = useSearchParams();
+  const sport = searchParams.get('sport');
   const { date, setDate, setCourt, court, selected, totalHours, totalAmount, clearSelection } =
     useBookingStore();
 
-  // Ensure a court is set (e.g. on hard refresh) from mock.
+  // Ensure the booking context (club + chosen sport) is set, e.g. on hard refresh.
   useEffect(() => {
-    if (!court && courtId) {
-      const c = mockCourts.find((m) => m.id === courtId);
-      if (c) setCourt(c);
+    if (!court && courtId === mockClub.id) {
+      const s = mockClub.sports.find((x) => x.sport === sport) ?? mockClub.sports[0];
+      setCourt(clubSportToCourt(mockClub, s));
     }
-  }, [court, courtId, setCourt]);
+  }, [court, courtId, sport, setCourt]);
+
+  // Grid rows = only the Sân of the chosen sport.
+  const gridCourts = court?.courts ?? mockClub.sports[0].courts;
 
   const query = useQuery({
-    queryKey: ['day-grid', courtId, date],
+    queryKey: ['day-grid', courtId, sport, date],
     queryFn: () => courtsApi.dayGrid(courtId!, date),
     enabled: !!courtId,
     retry: 0,
   });
   const usingMock = query.isError;
-  const slots = usingMock ? mockDayGrid() : query.data ?? [];
+  const slots = usingMock ? mockDayGrid(gridCourts) : query.data ?? [];
 
   return (
-    <PageShell title="Đặt lịch ngày trực quan" onBack={() => navigate(-1)}>
+    <PageShell title={`Đặt lịch ngày trực quan — ${court?.type ?? sport ?? ''}`} onBack={() => navigate(-1)}>
       {usingMock && <MockBanner />}
 
       <div className="mb-3 flex items-center justify-between gap-3">

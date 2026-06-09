@@ -3,53 +3,45 @@
 // rule). Each list has 2–3 items, matching the real response shape. Mutations are
 // NEVER mocked — they still surface real errors.
 
-import type { Coach, Court, EventItem, Match, PaymentInfo, TimeSlot } from '../types';
+import type { Club, ClubSport, Coach, Court, EventItem, Match, PaymentInfo, TimeSlot } from '../types';
 
-export const mockCourts: Court[] = [
-  {
-    id: 'c1',
-    name: 'An Bình Pickleball',
-    club: 'An Bình Pickleball',
-    address: '12/15 Kha Vạn Cân, Kp.Bình Đường 2, P.Dĩ An, Tp.HCM',
-    district: 'Dĩ An',
-    type: 'Pickleball',
-    pricePerHour: 80000,
-    rating: 4.8,
-    lat: 10.8946,
-    lng: 106.7654,
-  },
-  {
-    id: 'c2',
-    name: 'Hoàng Thành Pickleball',
-    club: 'Hoàng Thành Sports',
-    address: '45 Nguyễn Văn Bá, P.Trường Thọ, Tp.Thủ Đức',
-    district: 'Thủ Đức',
-    type: 'Pickleball',
-    pricePerHour: 100000,
-    rating: 4.6,
-    lat: 10.8453,
-    lng: 106.7689,
-  },
-  {
-    id: 'c3',
-    name: 'Nest World Badminton',
-    club: 'Nest World',
-    address: '88 Phạm Văn Đồng, P.Hiệp Bình Chánh, Tp.Thủ Đức',
-    district: 'Thủ Đức',
-    type: 'Badminton',
-    pricePerHour: 120000,
-    rating: 4.9,
-    lat: 10.8281,
-    lng: 106.7231,
-  },
-];
+// Single-club model: hệ thống quản lý ĐÚNG 1 CLB (venue), chứa NHIỀU môn.
+// Mỗi môn có Sân + giá riêng → chọn môn sẽ load các Sân của môn đó.
+export const mockClub: Club = {
+  id: 'c1',
+  name: 'An Bình Pickleball',
+  address: '12/15 Kha Vạn Cân, Kp.Bình Đường 2, P.Dĩ An, Tp.HCM',
+  district: 'Dĩ An',
+  rating: 4.8,
+  lat: 10.8946,
+  lng: 106.7654,
+  sports: [
+    { sport: 'Pickleball', pricePerHour: 80000, courts: ['Sân 1', 'Sân 2', 'Sân 3'] },
+    { sport: 'Badminton', pricePerHour: 120000, courts: ['Sân 4', 'Sân 5'] },
+  ],
+};
 
-const COURTS = ['Sân 1', 'Sân 2', 'Sân 3', 'Sân 4', 'Sân 5'];
+/** Build the "booking context" (Court) from the club + a chosen sport. */
+export function clubSportToCourt(club: Club, sport: ClubSport): Court {
+  return {
+    id: club.id,
+    name: club.name,
+    club: club.name,
+    address: club.address,
+    district: club.district,
+    type: sport.sport,
+    pricePerHour: sport.pricePerHour,
+    rating: club.rating,
+    lat: club.lat,
+    lng: club.lng,
+    courts: sport.courts,
+  };
+}
 
-/** Generates a full day grid (5:00–22:00, 30-min steps) with a few demo statuses. */
-export function mockDayGrid(): TimeSlot[] {
+/** Generates a full day grid (5:00–22:00, 30-min steps) for the given Sân list. */
+export function mockDayGrid(courtNames: string[] = ['Sân 1', 'Sân 2', 'Sân 3', 'Sân 4', 'Sân 5']): TimeSlot[] {
   const slots: TimeSlot[] = [];
-  for (const courtName of COURTS) {
+  for (const courtName of courtNames) {
     for (let h = 5; h < 22; h++) {
       for (const m of [0, 30]) {
         const start = `${String(h).padStart(2, '0')}:${m === 0 ? '00' : '30'}`;
@@ -132,7 +124,7 @@ export const mockMatches: Match[] = [
     date: '2026-06-13',
     startTime: '06:00',
     endTime: '08:00',
-    courtName: 'Nest World - Sân 1',
+    courtName: 'An Bình - Sân 1',
     skillLevel: 'Mọi trình độ',
     filledSlots: 6,
     totalSlots: 6,
