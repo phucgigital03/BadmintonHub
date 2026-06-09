@@ -49,10 +49,11 @@ jwt:
   access-expiration-ms: ${JWT_ACCESS_EXPIRATION_MS:900000}
   refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION_MS:2592000000}
 
-# Google OAuth2
+# Google OAuth2 — empty default so the service still boots before credentials are filled in.
+# When client-id is empty the Google audience check is skipped (dev); production must set GOOGLE_CLIENT_ID.
 google:
-  client-id: ${GOOGLE_CLIENT_ID}
-  client-secret: ${GOOGLE_CLIENT_SECRET}
+  client-id: ${GOOGLE_CLIENT_ID:}
+  client-secret: ${GOOGLE_CLIENT_SECRET:}
 
 # SendGrid email
 sendgrid:

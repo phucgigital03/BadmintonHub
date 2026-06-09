@@ -1,7 +1,9 @@
 package com.badmintonhub.user.service;
 
+import com.badmintonhub.user.dto.request.GoogleLoginRequest;
 import com.badmintonhub.user.dto.request.LoginRequest;
 import com.badmintonhub.user.dto.request.RegisterRequest;
+import com.badmintonhub.user.dto.request.ResetPasswordRequest;
 import com.badmintonhub.user.dto.response.AuthResponse;
 import com.badmintonhub.user.dto.response.UserResponse;
 import org.springframework.security.core.Authentication;
@@ -20,6 +22,15 @@ public interface AuthService {
     void verifyEmail(String token);
 
     LoginResult login(LoginRequest req);
+
+    /** Sign in (or sign up) with a Google id_token; issues JWT + refresh exactly like local login. */
+    LoginResult googleLogin(GoogleLoginRequest req);
+
+    /** Issue a single-use password-reset token (Redis, 1h). Always returns silently (no user enumeration). */
+    void forgotPassword(String email);
+
+    /** Consume the reset token (single-use), set the new password, and invalidate existing sessions. */
+    void resetPassword(ResetPasswordRequest req);
 
     RefreshResult refresh(String rawRefreshToken);
 

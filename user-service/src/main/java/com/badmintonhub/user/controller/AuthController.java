@@ -2,8 +2,11 @@ package com.badmintonhub.user.controller;
 
 import com.badmintonhub.common.exception.UnauthorizedException;
 import com.badmintonhub.security.JwtUtil;
+import com.badmintonhub.user.dto.request.ForgotPasswordRequest;
+import com.badmintonhub.user.dto.request.GoogleLoginRequest;
 import com.badmintonhub.user.dto.request.LoginRequest;
 import com.badmintonhub.user.dto.request.RegisterRequest;
+import com.badmintonhub.user.dto.request.ResetPasswordRequest;
 import com.badmintonhub.user.dto.response.AuthResponse;
 import com.badmintonhub.user.dto.response.UserResponse;
 import com.badmintonhub.user.service.AuthService;
@@ -62,6 +65,28 @@ public class AuthController {
         AuthService.LoginResult result = authService.login(req);
         response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie(result.rawRefreshToken()).toString());
         return ResponseEntity.ok(result.auth());
+    }
+
+    @PostMapping("/google")
+    public ResponseEntity<AuthResponse> google(@Valid @RequestBody GoogleLoginRequest req,
+                                               HttpServletResponse response) {
+        AuthService.LoginResult result = authService.googleLogin(req);
+        response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie(result.rawRefreshToken()).toString());
+        return ResponseEntity.ok(result.auth());
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<?> forgotPassword(@Valid @RequestBody ForgotPasswordRequest req) {
+        authService.forgotPassword(req.email());
+        // Always 200 regardless of whether the email exists (no user enumeration).
+        return ResponseEntity.ok(Map.of("message",
+                "Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi"));
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<?> resetPassword(@Valid @RequestBody ResetPasswordRequest req) {
+        authService.resetPassword(req);
+        return ResponseEntity.ok(Map.of("message", "Mật khẩu đã được đặt lại"));
     }
 
     @PostMapping("/refresh")
