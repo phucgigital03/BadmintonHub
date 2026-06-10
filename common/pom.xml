@@ -28,6 +28,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+        <!-- Core only (NOT the security starter): provides AccessDeniedException so the shared
+             GlobalExceptionHandler can map @PreAuthorize denials to 403. Inert without the starter,
+             so it does not enable Spring Security on non-secured services (notification/ai). -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-core</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

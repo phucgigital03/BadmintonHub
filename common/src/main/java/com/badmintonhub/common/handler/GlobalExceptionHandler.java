@@ -4,7 +4,9 @@ import com.badmintonhub.common.dto.response.ErrorResponse;
 import com.badmintonhub.common.exception.ApiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -30,6 +32,15 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .badRequest()
                 .body(ErrorResponse.of("VALIDATION_ERROR", message));
+    }
+
+    // @PreAuthorize / method-security denials surface here as AccessDeniedException; without this
+    // they would hit the catch-all below and wrongly return 500 instead of 403.
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException ex) {
+        return ResponseEntity
+                .status(HttpStatus.FORBIDDEN)
+                .body(ErrorResponse.of("FORBIDDEN", "Bạn không có quyền thực hiện thao tác này"));
     }
 
     @ExceptionHandler(Exception.class)
