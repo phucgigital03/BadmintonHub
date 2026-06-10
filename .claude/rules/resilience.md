@@ -104,14 +104,13 @@ public void publishPendingOutboxEvents() {
 ```
 
 ### Slot Auto-Generation (court-service)
+30-min cells, window 05:00–22:00 (per ERD + `UC_Visual_Day_Booking.md`). Idempotent per (court, date).
 ```java
 @Scheduled(cron = "0 0 0 * * *")  // midnight daily
-public void generateSlotsFor30Days() {
-    courtRepo.findAllByIsActiveTrue().forEach(court ->
-        slotGenerationService.generate(court,
-            LocalDate.now().plusDays(1), LocalDate.now().plusDays(30),
-            "06:00", "22:00", 60)
-    );
+public void generateUpcomingSlots() {
+    // SlotService iterates findByIsActiveTrue() courts and creates 30-min AVAILABLE
+    // slots (05:00–22:00) for now+1 .. now+30, skipping any (court, date) already generated.
+    slotService.generateForAllActiveCourts(LocalDate.now().plusDays(1), LocalDate.now().plusDays(30));
 }
 ```
 

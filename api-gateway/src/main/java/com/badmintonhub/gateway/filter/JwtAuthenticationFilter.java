@@ -49,6 +49,8 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     private static final String BEARER_PREFIX = "Bearer ";
     private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
     private static final List<String> PUBLIC_PATHS = List.of("/api/auth/**", "/actuator/**");
+    /** Anonymous read-only browse: club/court/pricing/slot-grid GETs need no token. */
+    private static final List<String> PUBLIC_GET_PATHS = List.of("/api/clubs/**", "/api/courts/**");
 
     private final JwtUtil jwtUtil;
     private final ReactiveStringRedisTemplate redisTemplate;
@@ -57,9 +59,11 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         String path = exchange.getRequest().getURI().getPath();
+        HttpMethod method = exchange.getRequest().getMethod();
         // CORS preflight (OPTIONS) carries no Authorization header — let it through so the gateway's
         // globalcors can answer it; otherwise protected-path preflight would 401 and CORS would fail.
-        if (HttpMethod.OPTIONS.equals(exchange.getRequest().getMethod()) || isPublic(path)) {
+        // Public paths + anonymous read-only browse (GET /api/clubs|courts/**) also skip the token gate.
+        if (HttpMethod.OPTIONS.equals(method) || isPublic(path) || isPublicGet(method, path)) {
             return chain.filter(exchange);
         }
 
@@ -106,6 +110,12 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
     private boolean isPublic(String path) {
         return PUBLIC_PATHS.stream().anyMatch(pattern -> PATH_MATCHER.match(pattern, path));
+    }
+
+    /** Read-only browse is anonymous; mutations (POST/PATCH/...) still require a valid token. */
+    private boolean isPublicGet(HttpMethod method, String path) {
+        return HttpMethod.GET.equals(method)
+                && PUBLIC_GET_PATHS.stream().anyMatch(pattern -> PATH_MATCHER.match(pattern, path));
     }
 
     private Mono<Void> writeError(ServerWebExchange exchange, String code, String message) {

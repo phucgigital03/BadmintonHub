@@ -92,7 +92,7 @@ spring:
         - id: court-service
           uri: lb://court-service
           predicates:
-            - Path=/api/courts/**
+            - Path=/api/courts/**, /api/clubs/**
         - id: booking-service
           uri: lb://booking-service
           predicates:

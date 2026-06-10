@@ -5,6 +5,7 @@ import com.badmintonhub.security.JwtUtil;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -17,9 +18,9 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  * forwarded {@code Authorization: Bearer} token via the shared {@link JwtUtil}; {@code @PreAuthorize}
  * on controllers enforces authorization.
  *
- * <p>Skeleton: only actuator health/info is public and everything else requires authentication. Day 6
- * will open public GET browse routes ({@code /api/clubs/**}, {@code /api/courts/**}) and add
- * {@code @PreAuthorize("hasAnyRole('STAFF','ADMIN')")} on the mutation endpoints.</p>
+ * <p>Public: actuator health/info + GET browse on {@code /api/clubs/**} and {@code /api/courts/**}
+ * (club/court/pricing/slot-grid reads need no login). Mutations stay {@code authenticated()} and are
+ * further restricted by {@code @PreAuthorize("hasAnyRole('STAFF','ADMIN')")} on the controllers.</p>
  */
 @Configuration
 @EnableWebSecurity
@@ -35,6 +36,7 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/clubs/**", "/api/courts/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
