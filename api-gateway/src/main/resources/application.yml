@@ -7,6 +7,18 @@ spring:
       port: ${REDIS_PORT:6379}
   cloud:
     gateway:
+      # CORS for the browser SPA (:5173). Origin = ${FRONTEND_URL} (the same env var that builds
+      # email links) — must be a concrete origin (not "*") because the FE sends credentials (refresh
+      # cookie). add-to-simple-url-handler-mapping lets the gateway answer preflight OPTIONS itself.
+      globalcors:
+        add-to-simple-url-handler-mapping: true
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "${FRONTEND_URL:http://localhost:5173}"
+            allowedMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+            allowedHeaders: "*"
+            allowCredentials: true
+            maxAge: 3600
       # Built-in token-bucket rate limiter applied to every route (RedisRateLimiter + KeyResolver
       # beans in GatewayConfig). Key = authenticated userId, or client IP for public paths.
       default-filters:
