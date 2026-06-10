@@ -5,11 +5,24 @@ import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { NotificationBell } from '../components/layout/NotificationBell';
 import { useAuthStore } from '../store/authStore';
+import { authApi } from '../api/auth';
 
 export default function DashboardPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { user, clearAuth } = useAuthStore();
+  const { user, clearAuth, hasRole } = useAuthStore();
+  const isStaff = hasRole('ROLE_STAFF') || hasRole('ROLE_ADMIN');
+
+  const logout = async () => {
+    // POST /api/auth/logout blacklists the jti; idempotent if it fails.
+    try {
+      await authApi.logout();
+    } catch {
+      /* ignore — clear locally regardless */
+    }
+    clearAuth();
+    navigate('/');
+  };
 
   return (
     <PageShell title={t('nav.dashboard')} onBack={() => navigate('/')}>
@@ -49,9 +62,19 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      <Button variant="outline" className="mt-6" onClick={() => { clearAuth(); navigate('/'); }}>
-        {t('nav.logout')}
-      </Button>
+      <div className="mt-6 flex flex-wrap gap-3">
+        <Button variant="outline" onClick={() => navigate('/profile')}>
+          👤 Hồ sơ
+        </Button>
+        {isStaff && (
+          <Button variant="outline" onClick={() => navigate('/admin')}>
+            🛠️ {t('nav.admin')}
+          </Button>
+        )}
+        <Button variant="outline" onClick={logout}>
+          {t('nav.logout')}
+        </Button>
+      </div>
     </PageShell>
   );
 }

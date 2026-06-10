@@ -52,6 +52,11 @@ export default function LoginPage() {
         <Button type="submit" variant="gold" size="lg" fullWidth disabled={mutation.isPending}>
           {mutation.isPending ? t('common.loading') : t('auth.loginCta')}
         </Button>
+        <div className="text-right">
+          <Link to="/forgot-password" className="text-sm text-white/70 hover:text-white hover:underline">
+            {t('auth.forgotLink')}
+          </Link>
+        </div>
       </form>
 
       <div className="my-4 flex items-center gap-3 text-white/40">

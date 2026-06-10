@@ -17,6 +17,15 @@ export interface AuthResponse {
   user: User;
 }
 
+// Spring Data Page<T> JSON shape (GET /api/users etc.)
+export interface Page<T> {
+  content: T[];
+  totalElements: number;
+  totalPages: number;
+  number: number;
+  size: number;
+}
+
 export type SlotStatus = 'AVAILABLE' | 'RESERVED' | 'BLOCKED' | 'EVENT';
 
 // A single sport offered by the club, with its own price + list of physical courts (Sân).

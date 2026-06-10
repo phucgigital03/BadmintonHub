@@ -38,7 +38,17 @@
     "haveAccount": "Already have an account?",
     "registerSuccess": "Registered! Check your email to verify.",
     "verifySuccess": "Email verified. Please sign in.",
-    "loginError": "Wrong email or password"
+    "loginError": "Wrong email or password",
+    "forgotLink": "Forgot password?",
+    "forgotTitle": "Forgot password",
+    "forgotDesc": "Enter your email — we'll send a password reset link.",
+    "forgotCta": "SEND LINK",
+    "forgotSent": "If the email exists, a reset link has been sent. Check your inbox.",
+    "resetTitle": "Reset password",
+    "resetCta": "RESET PASSWORD",
+    "resetSuccess": "Password reset. Please sign in.",
+    "newPassword": "New password",
+    "confirmPassword": "Confirm password"
   },
   "booking": {
     "chooseType": "Choose booking type",

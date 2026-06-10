@@ -38,7 +38,17 @@
     "haveAccount": "Đã có tài khoản?",
     "registerSuccess": "Đăng ký thành công! Kiểm tra email để xác thực.",
     "verifySuccess": "Email đã được xác thực. Mời bạn đăng nhập.",
-    "loginError": "Email hoặc mật khẩu không đúng"
+    "loginError": "Email hoặc mật khẩu không đúng",
+    "forgotLink": "Quên mật khẩu?",
+    "forgotTitle": "Quên mật khẩu",
+    "forgotDesc": "Nhập email của bạn — chúng tôi sẽ gửi liên kết đặt lại mật khẩu.",
+    "forgotCta": "GỬI LIÊN KẾT",
+    "forgotSent": "Nếu email tồn tại, liên kết đặt lại đã được gửi. Kiểm tra hộp thư của bạn.",
+    "resetTitle": "Đặt lại mật khẩu",
+    "resetCta": "ĐẶT LẠI MẬT KHẨU",
+    "resetSuccess": "Mật khẩu đã được đặt lại. Mời bạn đăng nhập.",
+    "newPassword": "Mật khẩu mới",
+    "confirmPassword": "Nhập lại mật khẩu"
   },
   "booking": {
     "chooseType": "Chọn hình thức đặt",
