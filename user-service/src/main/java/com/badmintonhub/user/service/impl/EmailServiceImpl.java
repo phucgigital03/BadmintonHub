@@ -19,19 +19,22 @@ public class EmailServiceImpl implements EmailService {
     private final String apiKey;
     private final String fromEmail;
     private final String fromName;
+    private final String frontendUrl;
 
     public EmailServiceImpl(
             @Value("${sendgrid.api-key:}") String apiKey,
             @Value("${sendgrid.from-email}") String fromEmail,
-            @Value("${sendgrid.from-name}") String fromName) {
+            @Value("${sendgrid.from-name}") String fromName,
+            @Value("${app.frontend-url}") String frontendUrl) {
         this.apiKey = apiKey;
         this.fromEmail = fromEmail;
         this.fromName = fromName;
+        this.frontendUrl = frontendUrl;
     }
 
     @Override
     public void sendVerificationEmail(String toEmail, String token) {
-        String link = "http://localhost:3000/api/auth/verify-email?token=" + token;
+        String link = frontendUrl + "/verify-email?token=" + token;
 
         if (!StringUtils.hasText(apiKey)) {
             log.info("[DEV] Email verify link for {}: {}", toEmail, link);
@@ -65,7 +68,7 @@ public class EmailServiceImpl implements EmailService {
     @Override
     public void sendPasswordResetEmail(String toEmail, String token) {
         // Reset is completed on the frontend form, which POSTs token + new password.
-        String link = "http://localhost:5173/reset-password?token=" + token;
+        String link = frontendUrl + "/reset-password?token=" + token;
 
         if (!StringUtils.hasText(apiKey)) {
             log.info("[DEV] Password reset link for {}: {}", toEmail, link);

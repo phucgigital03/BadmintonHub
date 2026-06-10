@@ -61,6 +61,10 @@ sendgrid:
   from-email: ${SENDGRID_FROM_EMAIL:noreply@badmintonhub.vn}
   from-name: ${SENDGRID_FROM_NAME:BadmintonHub}
 
+# Frontend base URL — used to build email links (verify email / reset password)
+app:
+  frontend-url: ${FRONTEND_URL:http://localhost:5173}
+
 management:
   endpoints:
     web:
