@@ -27,9 +27,26 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+  cloud:
+    openfeign:
+      client:
+        config:
+          court-service:
+            connect-timeout: 2000
+            read-timeout: 5000
 
 server:
   port: 3003
+
+# JWT — HS256, validate only (re-validate forwarded Bearer token via common-security JwtUtil).
+# No default so startup fails fast if missing; JWT_SECRET is shared in root .env.
+jwt:
+  secret: ${JWT_SECRET}
+
+app:
+  booking:
+    # PENDING hold window (= payment window). Slots auto-release after this if unpaid.
+    hold-minutes: ${BOOKING_HOLD_MINUTES:10}
 
 eureka:
   client:
