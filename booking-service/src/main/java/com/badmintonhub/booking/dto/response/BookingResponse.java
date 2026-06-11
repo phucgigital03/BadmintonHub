@@ -23,6 +23,7 @@ public record BookingResponse(
         BigDecimal refundAmount,
         BookingStatus status,
         LocalDateTime earliestStartTime,
+        LocalDateTime holdExpiresAt,
         String cancelReason,
         LocalDateTime createdAt,
         List<BookingItemResponse> items

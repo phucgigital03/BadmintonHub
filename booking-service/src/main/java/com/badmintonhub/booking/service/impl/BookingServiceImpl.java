@@ -270,7 +270,7 @@ public class BookingServiceImpl implements BookingService {
         return new BookingResponse(
                 b.getId(), b.getUserId(), b.getClubId(), b.getCustomerName(), b.getCustomerPhone(), b.getNote(),
                 b.getCustomerType(), b.getBookingDate(), b.getTotalPrice(), b.getRefundAmount(), b.getStatus(),
-                b.getEarliestStartTime(), b.getCancelReason(), b.getCreatedAt(), itemResponses);
+                b.getEarliestStartTime(), b.getHoldExpiresAt(), b.getCancelReason(), b.getCreatedAt(), itemResponses);
     }
 
     /** Per-slot snapshot indexed from the grid (court identity + frozen time/price). */
