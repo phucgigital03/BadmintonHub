@@ -10,9 +10,39 @@ import { Button } from '../../components/ui/Button';
 import { useBookingStore } from '../../store/bookingStore';
 import { useAuthStore } from '../../store/authStore';
 import { formatVnd } from '../../lib/cn';
-import type { PaymentInfo } from '../../types';
+import type { PaymentInfo, TimeSlot } from '../../types';
 
 const hm = (s: string) => s.replace(':', 'h');
+
+interface BookedRange {
+  courtId: string;
+  courtName: string;
+  start: string;
+  end: string;
+  price: number;
+}
+
+/** Collapse contiguous 30-min cells of the same court into one range; price = sum of real cell prices. */
+function mergeRanges(slots: TimeSlot[], fallbackCellPrice: number): BookedRange[] {
+  const sorted = slots
+    .slice()
+    .sort(
+      (a, b) =>
+        a.courtName.localeCompare(b.courtName, 'vi', { numeric: true }) || a.start.localeCompare(b.start),
+    );
+  const out: BookedRange[] = [];
+  for (const s of sorted) {
+    const price = typeof s.price === 'number' ? s.price : fallbackCellPrice;
+    const last = out[out.length - 1];
+    if (last && last.courtId === s.courtId && last.end === s.start) {
+      last.end = s.end; // extend the range
+      last.price += price;
+    } else {
+      out.push({ courtId: s.courtId, courtName: s.courtName, start: s.start, end: s.end, price });
+    }
+  }
+  return out;
+}
 
 export default function BookingConfirmPage() {
   const { t } = useTranslation();
@@ -32,7 +62,7 @@ export default function BookingConfirmPage() {
     );
   }
 
-  const slotPrice = 0.5 * court.pricePerHour;
+  const ranges = mergeRanges(selected, 0.5 * court.pricePerHour);
 
   const handleConfirm = () => {
     if (!name.trim() || !phone.trim()) {
@@ -51,7 +81,7 @@ export default function BookingConfirmPage() {
       expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
       customerName: name,
       customerPhone: phone,
-      detail: selected.map((s) => `${s.courtName} ${hm(s.start)}-${hm(s.end)}`).join(', '),
+      detail: ranges.map((r) => `${r.courtName} ${hm(r.start)}-${hm(r.end)}`).join(', '),
       date,
     };
     navigate('/payment', { state: payment });
@@ -69,15 +99,12 @@ export default function BookingConfirmPage() {
         <h2 className="mb-2 font-bold text-brand-accent">🎟️ {t('booking.bookingInfo')}</h2>
         <p>Ngày: <span className="font-semibold">{date.split('-').reverse().join('/')}</span></p>
         <ul className="my-1 space-y-0.5">
-          {selected
-            .slice()
-            .sort((a, b) => a.start.localeCompare(b.start))
-            .map((s, i) => (
-              <li key={i}>
-                - {s.courtName}: {hm(s.start)} - {hm(s.end)} |{' '}
-                <span className="text-brand-accent">{formatVnd(slotPrice)}</span>
-              </li>
-            ))}
+          {ranges.map((r, i) => (
+            <li key={i}>
+              - {r.courtName}: {hm(r.start)} - {hm(r.end)} |{' '}
+              <span className="text-brand-accent">{formatVnd(r.price)}</span>
+            </li>
+          ))}
         </ul>
         <p>Đối tượng: <span className="font-semibold">{court.type}</span></p>
         <p>Tổng giờ: <span className="font-semibold">{totalHours()}h00</span></p>
