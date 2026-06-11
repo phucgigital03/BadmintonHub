@@ -71,6 +71,7 @@ export interface TimeSlot {
   start: string; // "HH:mm"
   end: string;
   status: SlotStatus;
+  price?: number; // real per-30min-cell price from court-service; absent on mock grids
 }
 
 export type EventType = 'SOCIAL' | 'COMPETITIVE';

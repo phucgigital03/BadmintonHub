@@ -1,10 +1,9 @@
 import { useEffect } from 'react';
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { courtsApi } from '../../api/courts';
-import { mockClub, clubSportToCourt, mockDayGrid } from '../../api/mockData';
+import { clubsApi, clubSportToCourt } from '../../api/clubs';
 import { PageShell } from '../../components/layout/PageShell';
-import { MockBanner } from '../../components/ui/MockBanner';
+import { EmptyState, Spinner } from '../../components/ui/EmptyState';
 import { Button } from '../../components/ui/Button';
 import { SlotGrid } from '../../components/booking/SlotGrid';
 import { useBookingStore } from '../../store/bookingStore';
@@ -12,36 +11,36 @@ import { formatVnd } from '../../lib/cn';
 
 export default function CourtDayBookingPage() {
   const navigate = useNavigate();
-  const { courtId } = useParams();
+  const { courtId } = useParams(); // = club UUID
   const [searchParams] = useSearchParams();
   const sport = searchParams.get('sport');
   const { date, setDate, setCourt, court, selected, totalHours, totalAmount, clearSelection } =
     useBookingStore();
 
-  // Ensure the booking context (club + chosen sport) is set, e.g. on hard refresh.
-  useEffect(() => {
-    if (!court && courtId === mockClub.id) {
-      const s = mockClub.sports.find((x) => x.sport === sport) ?? mockClub.sports[0];
-      setCourt(clubSportToCourt(mockClub, s));
-    }
-  }, [court, courtId, sport, setCourt]);
-
-  // Grid rows = only the Sân of the chosen sport.
-  const gridCourts = court?.courts ?? mockClub.sports[0].courts;
-
-  const query = useQuery({
-    queryKey: ['day-grid', courtId, sport, date],
-    queryFn: () => courtsApi.dayGrid(courtId!, date),
-    enabled: !!courtId,
-    retry: 0,
+  // Restore the booking context (club + chosen sport) on hard-refresh from the real club query.
+  const clubQuery = useQuery({
+    queryKey: ['club'],
+    queryFn: clubsApi.getClubWithSports,
+    retry: 1,
+    staleTime: 60_000,
   });
-  const usingMock = query.isError;
-  const slots = usingMock ? mockDayGrid(gridCourts) : query.data ?? [];
+  useEffect(() => {
+    if (!court && clubQuery.data) {
+      const cl = clubQuery.data;
+      const s = cl.sports.find((x) => x.sport === sport) ?? cl.sports[0];
+      if (s) setCourt(clubSportToCourt(cl, s));
+    }
+  }, [court, sport, clubQuery.data, setCourt]);
+
+  const gridQuery = useQuery({
+    queryKey: ['day-grid', courtId, sport, date],
+    queryFn: () => clubsApi.dayGrid(courtId!, date, sport ?? ''),
+    enabled: !!courtId,
+    retry: 1,
+  });
 
   return (
     <PageShell title={`Đặt lịch ngày trực quan — ${court?.type ?? sport ?? ''}`} onBack={() => navigate(-1)}>
-      {usingMock && <MockBanner />}
-
       <div className="mb-3 flex items-center justify-between gap-3">
         <Link to={`/courts/${courtId}/pricing`} className="font-semibold text-brand-accent hover:underline">
           Xem sân & bảng giá
@@ -58,7 +57,15 @@ export default function CourtDayBookingPage() {
         Lưu ý: Nếu bạn cần đặt lịch tháng vui lòng liên hệ số điện thoại 0908 334 461 để được hỗ trợ
       </p>
 
-      <SlotGrid slots={slots} />
+      {gridQuery.isLoading ? (
+        <Spinner label="Đang tải lịch sân..." />
+      ) : gridQuery.isError ? (
+        <EmptyState icon="⚠️" title="Không tải được lịch sân">
+          Kiểm tra court-service (:3002) và API Gateway (:3000), rồi thử lại.
+        </EmptyState>
+      ) : (
+        <SlotGrid slots={gridQuery.data ?? []} />
+      )}
 
       {/* Sticky bottom bar */}
       <div className="sticky bottom-0 -mx-4 mt-4 flex items-center justify-between gap-4 bg-brand-header px-4 py-3">

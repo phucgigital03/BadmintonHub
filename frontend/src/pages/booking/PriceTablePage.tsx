@@ -1,5 +1,9 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { clubsApi, type PricingRuleResponse, type DayTypeEnum } from '../../api/clubs';
 import { PageShell } from '../../components/layout/PageShell';
+import { EmptyState, Spinner } from '../../components/ui/EmptyState';
+import { formatVnd } from '../../lib/cn';
 
 interface Row {
   group: string;
@@ -14,32 +18,32 @@ interface SportPricing {
   rows: Row[];
 }
 
-// Static pricing per sport (matches alobo "Xem sân và bảng giá"). Cùng cấu trúc
-// T2-T6 / T7-CN × 3 khung giờ × Cố định / Vãng lai — khác giá theo từng môn.
-const PRICING: SportPricing[] = [
-  {
-    sport: 'Pickleball',
-    rows: [
-      { group: 'T2 - T6', span: 3, slot: '5h - 10h', fixed: '80.000 đ', walkin: '100.000 đ' },
-      { group: '', span: 0, slot: '10h - 17h', fixed: '60.000 đ', walkin: '80.000 đ' },
-      { group: '', span: 0, slot: '17h - 23h', fixed: '150.000 đ', walkin: '170.000 đ' },
-      { group: 'T7 - CN', span: 3, slot: '5h - 10h', fixed: '100.000 đ', walkin: '120.000 đ' },
-      { group: '', span: 0, slot: '10h - 17h', fixed: '80.000 đ', walkin: '100.000 đ' },
-      { group: '', span: 0, slot: '17h - 23h', fixed: '160.000 đ', walkin: '180.000 đ' },
-    ],
-  },
-  {
-    sport: 'Badminton',
-    rows: [
-      { group: 'T2 - T6', span: 3, slot: '5h - 10h', fixed: '120.000 đ', walkin: '140.000 đ' },
-      { group: '', span: 0, slot: '10h - 17h', fixed: '100.000 đ', walkin: '120.000 đ' },
-      { group: '', span: 0, slot: '17h - 23h', fixed: '180.000 đ', walkin: '200.000 đ' },
-      { group: 'T7 - CN', span: 3, slot: '5h - 10h', fixed: '140.000 đ', walkin: '160.000 đ' },
-      { group: '', span: 0, slot: '10h - 17h', fixed: '120.000 đ', walkin: '140.000 đ' },
-      { group: '', span: 0, slot: '17h - 23h', fixed: '200.000 đ', walkin: '220.000 đ' },
-    ],
-  },
-];
+const hhmm = (t: string) => t.slice(0, 5);
+const DAY_LABEL: Record<DayTypeEnum, string> = { WEEKDAY: 'T2 - T6', WEEKEND: 'T7 - CN' };
+
+/** Pivot the multi-dimensional pricing rules into the T2-T6 / T7-CN × windows × Cố định/Vãng lai table. */
+function buildRows(rules: PricingRuleResponse[]): Row[] {
+  const rows: Row[] = [];
+  for (const dt of ['WEEKDAY', 'WEEKEND'] as DayTypeEnum[]) {
+    const dtRules = rules.filter((r) => r.dayType === dt);
+    if (dtRules.length === 0) continue;
+    // distinct windows (startTime-endTime), chronological (lexical sort on "HH:mm:ss")
+    const windows = [...new Set(dtRules.map((r) => `${r.startTime}|${r.endTime}`))].sort();
+    windows.forEach((w, i) => {
+      const [start, end] = w.split('|');
+      const fixed = dtRules.find((r) => `${r.startTime}|${r.endTime}` === w && r.customerType === 'FIXED');
+      const walkin = dtRules.find((r) => `${r.startTime}|${r.endTime}` === w && r.customerType === 'WALK_IN');
+      rows.push({
+        group: i === 0 ? DAY_LABEL[dt] : '',
+        span: i === 0 ? windows.length : 0,
+        slot: `${hhmm(start)} - ${hhmm(end)}`,
+        fixed: fixed ? formatVnd(fixed.pricePerHour) : '—',
+        walkin: walkin ? formatVnd(walkin.pricePerHour) : '—',
+      });
+    });
+  }
+  return rows;
+}
 
 function SportTable({ sport, rows }: SportPricing) {
   return (
@@ -75,14 +79,42 @@ function SportTable({ sport, rows }: SportPricing) {
 
 export default function PriceTablePage() {
   const navigate = useNavigate();
+  const { courtId } = useParams(); // = club UUID
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['pricing-table', courtId],
+    queryFn: async (): Promise<SportPricing[]> => {
+      const [pickleball, badminton] = await Promise.all([
+        clubsApi.pricing(courtId!, 'Pickleball'),
+        clubsApi.pricing(courtId!, 'Badminton'),
+      ]);
+      return [
+        { sport: 'Pickleball', rows: buildRows(pickleball) },
+        { sport: 'Badminton', rows: buildRows(badminton) },
+      ].filter((s) => s.rows.length > 0);
+    },
+    enabled: !!courtId,
+    retry: 1,
+  });
+
   return (
     <PageShell title="Xem sân và bảng giá" onBack={() => navigate(-1)} maxWidth="max-w-3xl">
       <h2 className="mb-3 text-lg font-semibold">Bảng giá sân</h2>
-      <div className="space-y-6">
-        {PRICING.map((p) => (
-          <SportTable key={p.sport} {...p} />
-        ))}
-      </div>
+      {isLoading ? (
+        <Spinner label="Đang tải bảng giá..." />
+      ) : isError ? (
+        <EmptyState icon="⚠️" title="Không tải được bảng giá">
+          Kiểm tra court-service (:3002) và API Gateway (:3000), rồi thử lại.
+        </EmptyState>
+      ) : !data || data.length === 0 ? (
+        <EmptyState title="CLB chưa cấu hình bảng giá" />
+      ) : (
+        <div className="space-y-6">
+          {data.map((p) => (
+            <SportTable key={p.sport} {...p} />
+          ))}
+        </div>
+      )}
     </PageShell>
   );
 }

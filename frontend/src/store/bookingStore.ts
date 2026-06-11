@@ -48,5 +48,13 @@ export const useBookingStore = create<BookingState>((set, get) => ({
   setCustomer: (customerName, customerPhone, note) => set({ customerName, customerPhone, note }),
 
   totalHours: () => get().selected.length * 0.5,
-  totalAmount: () => get().selected.length * 0.5 * (get().court?.pricePerHour ?? 0),
+  // Sum the real per-cell price from court-service; fall back per-slot to half the
+  // hourly rate when a slot carries no price (e.g. a mock grid or an unpriced cell).
+  totalAmount: () => {
+    const pph = get().court?.pricePerHour ?? 0;
+    return get().selected.reduce(
+      (sum, s) => sum + (typeof s.price === 'number' ? s.price : 0.5 * pph),
+      0,
+    );
+  },
 }));

@@ -3,61 +3,11 @@
 // rule). Each list has 2–3 items, matching the real response shape. Mutations are
 // NEVER mocked — they still surface real errors.
 
-import type { Club, ClubSport, Coach, Court, EventItem, Match, PaymentInfo, TimeSlot } from '../types';
+import type { Coach, EventItem, Match, PaymentInfo } from '../types';
 
-// Single-club model: hệ thống quản lý ĐÚNG 1 CLB (venue), chứa NHIỀU môn.
-// Mỗi môn có Sân + giá riêng → chọn môn sẽ load các Sân của môn đó.
-export const mockClub: Club = {
-  id: 'c1',
-  name: 'An Bình Pickleball',
-  address: '12/15 Kha Vạn Cân, Kp.Bình Đường 2, P.Dĩ An, Tp.HCM',
-  district: 'Dĩ An',
-  rating: 4.8,
-  lat: 10.8946,
-  lng: 106.7654,
-  sports: [
-    { sport: 'Pickleball', pricePerHour: 80000, courts: ['Sân 1', 'Sân 2', 'Sân 3'] },
-    { sport: 'Badminton', pricePerHour: 120000, courts: ['Sân 4', 'Sân 5'] },
-  ],
-};
-
-/** Build the "booking context" (Court) from the club + a chosen sport. */
-export function clubSportToCourt(club: Club, sport: ClubSport): Court {
-  return {
-    id: club.id,
-    name: club.name,
-    club: club.name,
-    address: club.address,
-    district: club.district,
-    type: sport.sport,
-    pricePerHour: sport.pricePerHour,
-    rating: club.rating,
-    lat: club.lat,
-    lng: club.lng,
-    courts: sport.courts,
-  };
-}
-
-/** Generates a full day grid (5:00–22:00, 30-min steps) for the given Sân list. */
-export function mockDayGrid(courtNames: string[] = ['Sân 1', 'Sân 2', 'Sân 3', 'Sân 4', 'Sân 5']): TimeSlot[] {
-  const slots: TimeSlot[] = [];
-  for (const courtName of courtNames) {
-    for (let h = 5; h < 22; h++) {
-      for (const m of [0, 30]) {
-        const start = `${String(h).padStart(2, '0')}:${m === 0 ? '00' : '30'}`;
-        const endH = m === 0 ? h : h + 1;
-        const endM = m === 0 ? 30 : 0;
-        const end = `${String(endH).padStart(2, '0')}:${endM === 0 ? '00' : '30'}`;
-        let status: TimeSlot['status'] = 'AVAILABLE';
-        if (courtName === 'Sân 5' && h === 8) status = 'RESERVED';
-        if (courtName === 'Sân 3' && h === 12) status = 'BLOCKED';
-        if (courtName === 'Sân 1' && h === 19) status = 'EVENT';
-        slots.push({ courtId: courtName, courtName, start, end, status });
-      }
-    }
-  }
-  return slots;
-}
+// NOTE: court/club data is NO LONGER mocked — CourtsPage/CourtDayBookingPage/PriceTablePage
+// call the real court-service (see api/clubs.ts). Only events/matches/coaches/payment below
+// remain mock until their backends exist.
 
 export const mockEvents: EventItem[] = [
   {
