@@ -21,13 +21,19 @@ alwaysApply: false
 | `match.completed` | matchmaking-service | escrow-service, notification-service |
 | `match.compensate.slot` | matchmaking-service | booking-service, escrow-service |
 | `booking.slot.confirmed` | booking-service | matchmaking-service, notification-service, escrow-service |
+| `booking.slot.held` | booking-service (Outbox) | court-service |
+| `booking.slot.released` | booking-service (Outbox) | court-service |
 | `escrow.host.reimbursed` | escrow-service | notification-service |
 
 DLT suffix: `{topic}.DLT` (e.g. `payment.host.confirmed.DLT`)
 
-## Outbox Pattern (matchmaking-service only)
+## Outbox Pattern (matchmaking-service + booking-service)
 
 Save `OutboxEvent` in the **same `@Transactional`** as the business record. A `@Scheduled` job (every 3s) polls `outbox_events WHERE status='PENDING'` and publishes to Kafka.
+
+> **booking-service** uses the Outbox for the slot-hold Saga: `create` / `cancel` / hold-expiry write a
+> `booking.slot.held` / `booking.slot.released` row in the same transaction as the booking change, so
+> court-service is reliably told to flip the slot RESERVED↔AVAILABLE (the grid reflects the hold).
 
 ```java
 // Inside MatchService.joinMatch() — one transaction
@@ -60,7 +66,7 @@ public void publishPendingEvents() {
 
 Outbox cleanup: delete SENT events older than 30 days (`@Scheduled(cron = "0 0 2 * * *")`).
 
-## Idempotency Guard (booking-service, escrow-service)
+## Idempotency Guard (booking-service, escrow-service, court-service)
 
 Always check `processed_events` before processing. Use the Kafka record key or a UUID from the event payload as `event_id`.
 
