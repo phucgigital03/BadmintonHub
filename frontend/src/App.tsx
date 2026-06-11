@@ -12,6 +12,7 @@ import CourtsPage from './pages/booking/CourtsPage';
 import CourtDayBookingPage from './pages/booking/CourtDayBookingPage';
 import PriceTablePage from './pages/booking/PriceTablePage';
 import BookingConfirmPage from './pages/booking/BookingConfirmPage';
+import MyBookingsPage from './pages/booking/MyBookingsPage';
 import EventsPage from './pages/events/EventsPage';
 import EventDetailPage from './pages/events/EventDetailPage';
 import PaymentPage from './pages/PaymentPage';
@@ -55,7 +56,22 @@ export default function App() {
       <Route path="/courts" element={<CourtsPage />} />
       <Route path="/courts/:courtId/booking" element={<CourtDayBookingPage />} />
       <Route path="/courts/:courtId/pricing" element={<PriceTablePage />} />
-      <Route path="/booking/confirm" element={<BookingConfirmPage />} />
+      <Route
+        path="/booking/confirm"
+        element={
+          <ProtectedRoute>
+            <BookingConfirmPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/my-bookings"
+        element={
+          <ProtectedRoute>
+            <MyBookingsPage />
+          </ProtectedRoute>
+        }
+      />
 
       {/* Events + payment (mock) */}
       <Route path="/events" element={<EventsPage />} />

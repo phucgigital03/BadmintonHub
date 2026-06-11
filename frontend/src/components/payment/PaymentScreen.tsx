@@ -28,12 +28,9 @@ export function PaymentScreen({ payment, onDone }: { payment: PaymentInfo; onDon
   };
 
   const confirm = () => {
-    if (!proof) {
-      toast.error('Vui lòng tải ảnh chuyển khoản');
-      return;
-    }
-    // Real flow: multipart POST /api/payments/{id}/proof (backend pending).
-    toast.success('Đã gửi ảnh — chờ chủ sân xác nhận đơn.');
+    // payment-service is Day 8 — this screen is a DEMO. The booking is already created (PENDING) and
+    // is holding the slots; here we just continue to "Lịch đặt của tôi".
+    toast.success('Demo thanh toán — đơn đã được giữ chỗ. Xem ở "Lịch đặt của tôi".');
     onDone();
   };
 
@@ -105,6 +102,9 @@ export function PaymentScreen({ payment, onDone }: { payment: PaymentInfo; onDon
       <Button variant="gold" size="lg" fullWidth className="mt-6" onClick={confirm}>
         {t('payment.confirmBooking')}
       </Button>
+      <p className="mt-2 text-center text-xs text-gray-500">
+        ⓘ Thanh toán Bank QR đang phát triển (Day 8). Đơn đã được <b>giữ chỗ</b> ngay khi tạo — đây là màn demo.
+      </p>
     </div>
   );
 }

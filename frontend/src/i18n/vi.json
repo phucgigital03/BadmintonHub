@@ -21,6 +21,7 @@
     "admin": "Quản trị",
     "login": "Đăng nhập",
     "register": "Đăng ký",
+    "myBookings": "Lịch đặt của tôi",
     "logout": "Đăng xuất"
   },
   "auth": {

@@ -63,6 +63,9 @@ export default function DashboardPage() {
       </div>
 
       <div className="mt-6 flex flex-wrap gap-3">
+        <Button variant="outline" onClick={() => navigate('/my-bookings')}>
+          📅 {t('nav.myBookings')}
+        </Button>
         <Button variant="outline" onClick={() => navigate('/profile')}>
           👤 Hồ sơ
         </Button>

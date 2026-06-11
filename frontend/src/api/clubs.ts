@@ -167,6 +167,7 @@ export const clubsApi = {
       .then((r) =>
         r.data.courts.flatMap((court) =>
           court.slots.map<TimeSlot>((s) => ({
+            slotId: s.id,
             courtId: court.id,
             courtName: court.courtNumber,
             start: hhmm(s.startTime),

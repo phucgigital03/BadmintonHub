@@ -14,7 +14,7 @@ export default function PaymentPage() {
 
   return (
     <PageShell title={t('payment.title')} onBack={() => navigate(-1)}>
-      <PaymentScreen payment={payment} onDone={() => navigate('/dashboard')} />
+      <PaymentScreen payment={payment} onDone={() => navigate('/my-bookings')} />
     </PageShell>
   );
 }

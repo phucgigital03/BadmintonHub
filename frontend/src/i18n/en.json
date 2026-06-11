@@ -21,6 +21,7 @@
     "admin": "Admin",
     "login": "Sign in",
     "register": "Sign up",
+    "myBookings": "My Bookings",
     "logout": "Sign out"
   },
   "auth": {

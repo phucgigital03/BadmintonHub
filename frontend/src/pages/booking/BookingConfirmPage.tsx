@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useMutation } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import type { AxiosError } from 'axios';
 import { PageShell } from '../../components/layout/PageShell';
 import { Card } from '../../components/ui/Card';
 import { Input } from '../../components/ui/Input';
@@ -10,6 +12,7 @@ import { Button } from '../../components/ui/Button';
 import { useBookingStore } from '../../store/bookingStore';
 import { useAuthStore } from '../../store/authStore';
 import { formatVnd } from '../../lib/cn';
+import { bookingsApi, type BookingResponse } from '../../api/bookings';
 import type { PaymentInfo, TimeSlot } from '../../types';
 
 const hm = (s: string) => s.replace(':', 'h');
@@ -48,7 +51,7 @@ export default function BookingConfirmPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
-  const { court, date, selected, totalHours, totalAmount, setCustomer } = useBookingStore();
+  const { court, date, selected, totalHours, totalAmount, setCustomer, clearSelection } = useBookingStore();
 
   const [name, setName] = useState(user?.fullName ?? '');
   const [phone, setPhone] = useState('');
@@ -64,27 +67,54 @@ export default function BookingConfirmPage() {
 
   const ranges = mergeRanges(selected, 0.5 * court.pricePerHour);
 
+  // Real create → POST /api/bookings (needs login + verified email). On success we hand the REAL
+  // booking off to the (demo) payment screen; payment-service itself is Day 8.
+  const createMut = useMutation({
+    mutationFn: bookingsApi.create,
+    onSuccess: (booking: BookingResponse) => {
+      const payment: PaymentInfo = {
+        paymentId: booking.id,
+        orderCode: Number(booking.id.replace(/\D/g, '').slice(0, 6)) || 0,
+        paymentType: 'BOOKING',
+        bankName: 'Ngân hàng Shinhan Việt Nam', // demo — payment-service (Day 8) sẽ trả TK thật
+        accountNumber: '0962728894',
+        accountName: 'Trần Quốc Phú',
+        amount: booking.totalPrice,
+        expiresAt: booking.holdExpiresAt ?? new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        customerName: booking.customerName,
+        customerPhone: booking.customerPhone,
+        detail: ranges.map((r) => `${r.courtName} ${hm(r.start)}-${hm(r.end)}`).join(', '),
+        date: booking.bookingDate,
+      };
+      clearSelection();
+      toast.success('Đã giữ chỗ — đơn đang chờ thanh toán');
+      navigate('/payment', { state: payment });
+    },
+    onError: (err: AxiosError<{ message?: string }>) =>
+      toast.error(err.response?.data?.message ?? 'Đặt lịch thất bại, vui lòng thử lại'),
+  });
+
   const handleConfirm = () => {
     if (!name.trim() || !phone.trim()) {
       toast.error('Vui lòng nhập tên và số điện thoại');
       return;
     }
+    const items = selected
+      .filter((s) => s.slotId)
+      .map((s) => ({ courtId: s.courtId, slotId: s.slotId as string }));
+    if (items.length !== selected.length) {
+      toast.error('Lưới đặt chưa sẵn sàng — vui lòng tải lại trang');
+      return;
+    }
     setCustomer(name, phone, note);
-    const payment: PaymentInfo = {
-      paymentId: 'pay-' + Date.now(),
-      orderCode: Math.floor(100 + Math.random() * 900),
-      paymentType: 'BOOKING',
-      bankName: 'Ngân hàng Shinhan Việt Nam',
-      accountNumber: '0962728894',
-      accountName: 'Trần Quốc Phú',
-      amount: totalAmount(),
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-      customerName: name,
-      customerPhone: phone,
-      detail: ranges.map((r) => `${r.courtName} ${hm(r.start)}-${hm(r.end)}`).join(', '),
+    createMut.mutate({
+      clubId: court.id,
       date,
-    };
-    navigate('/payment', { state: payment });
+      customerName: name.trim(),
+      customerPhone: phone.replace(/\s+/g, ''),
+      note: note.trim() || undefined,
+      items,
+    });
   };
 
   return (
@@ -129,8 +159,15 @@ export default function BookingConfirmPage() {
         </div>
       </div>
 
-      <Button variant="gold" size="lg" fullWidth className="mt-6" onClick={handleConfirm}>
-        {t('booking.confirmAndPay')}
+      <Button
+        variant="gold"
+        size="lg"
+        fullWidth
+        className="mt-6"
+        onClick={handleConfirm}
+        disabled={createMut.isPending}
+      >
+        {createMut.isPending ? 'Đang đặt…' : t('booking.confirmAndPay')}
       </Button>
     </PageShell>
   );

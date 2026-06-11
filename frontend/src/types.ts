@@ -66,6 +66,7 @@ export interface Court {
 }
 
 export interface TimeSlot {
+  slotId?: string; // time_slots.id — needed to build booking items; absent on mock grids
   courtId: string;
   courtName: string;
   start: string; // "HH:mm"
