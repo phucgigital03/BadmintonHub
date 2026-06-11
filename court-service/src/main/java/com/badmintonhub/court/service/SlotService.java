@@ -5,6 +5,7 @@ import com.badmintonhub.court.dto.response.SlotResponse;
 import com.badmintonhub.court.entity.enums.Sport;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 public interface SlotService {
@@ -20,4 +21,10 @@ public interface SlotService {
 
     /** Single slot + price — for Feign lookups from booking/matchmaking-service. */
     SlotResponse getSlot(UUID courtId, UUID slotId);
+
+    /** Saga consumer: a PENDING booking holds these slots → flip AVAILABLE→RESERVED (idempotent, skips non-AVAILABLE). */
+    void holdSlots(UUID bookingId, List<UUID> slotIds);
+
+    /** Saga consumer: a booking was cancelled/expired → flip RESERVED→AVAILABLE, only for slots still owned by it. */
+    void releaseSlots(UUID bookingId, List<UUID> slotIds);
 }

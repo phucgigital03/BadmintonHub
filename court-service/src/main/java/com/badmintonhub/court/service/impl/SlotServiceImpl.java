@@ -19,6 +19,7 @@ import com.badmintonhub.court.service.PricingRules;
 import com.badmintonhub.court.service.PricingService;
 import com.badmintonhub.court.service.SlotService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +33,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SlotServiceImpl implements SlotService {
@@ -149,5 +151,44 @@ public class SlotServiceImpl implements SlotService {
         return new SlotResponse(
                 slot.getId(), slot.getDate(), slot.getStartTime(), slot.getEndTime(), slot.getStatus(),
                 price, slot.getEventId(), slot.getBookingId(), slot.getMatchId(), slot.getEnrollmentId());
+    }
+
+    @Override
+    @Transactional
+    public void holdSlots(UUID bookingId, List<UUID> slotIds) {
+        List<TimeSlot> changed = new ArrayList<>();
+        for (TimeSlot slot : timeSlotRepository.findAllById(slotIds)) {
+            if (slot.getStatus() == SlotStatus.AVAILABLE) {
+                slot.setStatus(SlotStatus.RESERVED);
+                slot.setBookingId(bookingId);
+                changed.add(slot);
+            } else if (slot.getStatus() == SlotStatus.RESERVED && bookingId.equals(slot.getBookingId())) {
+                // already held by this booking — idempotent no-op (duplicate delivery)
+            } else {
+                log.warn("Hold skipped: slot {} is {} (bookingId={}) — cannot hold for booking {}",
+                        slot.getId(), slot.getStatus(), slot.getBookingId(), bookingId);
+            }
+        }
+        timeSlotRepository.saveAll(changed);
+        log.info("Held {}/{} slot(s) for booking {}", changed.size(), slotIds.size(), bookingId);
+    }
+
+    @Override
+    @Transactional
+    public void releaseSlots(UUID bookingId, List<UUID> slotIds) {
+        List<TimeSlot> changed = new ArrayList<>();
+        for (TimeSlot slot : timeSlotRepository.findAllById(slotIds)) {
+            // Ownership/zombie guard: only release a slot this booking still holds.
+            if (slot.getStatus() == SlotStatus.RESERVED && bookingId.equals(slot.getBookingId())) {
+                slot.setStatus(SlotStatus.AVAILABLE);
+                slot.setBookingId(null);
+                changed.add(slot);
+            } else {
+                log.warn("Release skipped: slot {} is {} bookingId={} — not held by event booking {}",
+                        slot.getId(), slot.getStatus(), slot.getBookingId(), bookingId);
+            }
+        }
+        timeSlotRepository.saveAll(changed);
+        log.info("Released {}/{} slot(s) for booking {}", changed.size(), slotIds.size(), bookingId);
     }
 }
