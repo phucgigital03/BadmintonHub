@@ -39,7 +39,7 @@ public class JwtTokenProvider {
     /** Holder returned by {@link #generateAccessToken} so the caller can blacklist by jti and report expiry. */
     public record AccessToken(String token, String jti, Instant expiresAt) {}
 
-    public AccessToken generateAccessToken(UUID userId, Collection<String> roles) {
+    public AccessToken generateAccessToken(UUID userId, Collection<String> roles, boolean emailVerified) {
         String jti = UUID.randomUUID().toString();
         Instant now = Instant.now();
         Instant expiresAt = now.plusMillis(accessExpirationMs);
@@ -47,6 +47,7 @@ public class JwtTokenProvider {
         String token = Jwts.builder()
                 .subject(userId.toString())
                 .claim(JwtUtil.CLAIM_ROLES, List.copyOf(roles))
+                .claim(JwtUtil.CLAIM_EMAIL_VERIFIED, emailVerified)
                 .id(jti)
                 .issuedAt(java.util.Date.from(now))
                 .expiration(java.util.Date.from(expiresAt))

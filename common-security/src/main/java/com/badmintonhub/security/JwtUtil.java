@@ -22,12 +22,17 @@ import java.util.List;
  *   <li>{@code sub}  — userId (UUID string)</li>
  *   <li>{@code roles} — {@code List<String>}, e.g. {@code ["ROLE_USER"]}</li>
  *   <li>{@code jti}  — token id (UUID string), used for the Redis logout blacklist</li>
+ *   <li>{@code email_verified} — {@code boolean}; lets any service enforce the email-verified guard
+ *       (Never-Violate #10) straight from the token, with no call back to user-service</li>
  * </ul>
  */
 public class JwtUtil {
 
     /** Claim name holding the user's roles — shared between token producers and consumers. */
     public static final String CLAIM_ROLES = "roles";
+
+    /** Claim name holding the user's email-verified flag — shared between token producers and consumers. */
+    public static final String CLAIM_EMAIL_VERIFIED = "email_verified";
 
     private final SecretKey key;
 
@@ -68,5 +73,10 @@ public class JwtUtil {
             return list.stream().map(String::valueOf).toList();
         }
         return Collections.emptyList();
+    }
+
+    /** Whether the token's owner has a verified email. Defaults to {@code false} if the claim is absent. */
+    public boolean isEmailVerified(Claims claims) {
+        return Boolean.TRUE.equals(claims.get(CLAIM_EMAIL_VERIFIED, Boolean.class));
     }
 }

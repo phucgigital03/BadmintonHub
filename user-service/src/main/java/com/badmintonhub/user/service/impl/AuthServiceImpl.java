@@ -127,7 +127,7 @@ public class AuthServiceImpl implements AuthService {
 
         Set<String> authorities = toAuthorities(user);
         JwtTokenProvider.AccessToken accessToken =
-                jwtTokenProvider.generateAccessToken(user.getId(), authorities);
+                jwtTokenProvider.generateAccessToken(user.getId(), authorities, user.isEmailVerified());
 
         String rawRefresh = jwtTokenProvider.generateRefreshTokenValue(user.getId());
         user.setRefreshTokenHash(passwordEncoder.encode(rawRefresh));
@@ -146,7 +146,7 @@ public class AuthServiceImpl implements AuthService {
 
         Set<String> authorities = toAuthorities(user);
         JwtTokenProvider.AccessToken accessToken =
-                jwtTokenProvider.generateAccessToken(user.getId(), authorities);
+                jwtTokenProvider.generateAccessToken(user.getId(), authorities, user.isEmailVerified());
 
         String rawRefresh = jwtTokenProvider.generateRefreshTokenValue(user.getId());
         user.setRefreshTokenHash(passwordEncoder.encode(rawRefresh));
@@ -236,7 +236,7 @@ public class AuthServiceImpl implements AuthService {
 
         Set<String> authorities = toAuthorities(user);
         JwtTokenProvider.AccessToken accessToken =
-                jwtTokenProvider.generateAccessToken(user.getId(), authorities);
+                jwtTokenProvider.generateAccessToken(user.getId(), authorities, user.isEmailVerified());
 
         // Rotate the refresh token.
         String newRawRefresh = jwtTokenProvider.generateRefreshTokenValue(user.getId());
