@@ -15,11 +15,12 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
-import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.Generated;
+import org.hibernate.generator.EventType;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
 import java.math.BigDecimal;
@@ -51,10 +52,12 @@ public class Payment extends BaseAuditEntity {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    /** Human-friendly serial shown on screen + written in the transfer note. Postgres sequence. */
-    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "payment_order_seq")
-    @SequenceGenerator(name = "payment_order_seq", sequenceName = "payment_order_seq", allocationSize = 1)
-    @Column(name = "order_code", nullable = false, updatable = false)
+    /**
+     * Human-friendly serial shown on screen + written in the transfer note (rendered "#" + value).
+     * Postgres {@code bigserial} assigns it on INSERT; {@code @Generated} reads the value back.
+     */
+    @Generated(event = EventType.INSERT)
+    @Column(name = "order_code", nullable = false, updatable = false, columnDefinition = "bigserial")
     private Long orderCode;
 
     @Column(name = "booking_id", columnDefinition = "uuid")
