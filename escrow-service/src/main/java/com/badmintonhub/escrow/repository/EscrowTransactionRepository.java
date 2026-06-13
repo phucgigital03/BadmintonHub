@@ -6,6 +6,7 @@ import com.badmintonhub.escrow.entity.enums.EscrowTransactionType;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface EscrowTransactionRepository extends JpaRepository<EscrowTransaction, UUID> {
@@ -20,4 +21,10 @@ public interface EscrowTransactionRepository extends JpaRepository<EscrowTransac
 
     /** All ledger entries of one account (escrow detail view). */
     List<EscrowTransaction> findByEscrow_IdOrderByCreatedAtAsc(UUID escrowId);
+
+    /** The HOST_DEPOSIT row identifies the Host (its from_party) — used to direct reimbursements/refunds. */
+    Optional<EscrowTransaction> findFirstByEscrow_IdAndType(UUID escrowId, EscrowTransactionType type);
+
+    /** All player reimbursements of one account — refunded back to each player on cancellation. */
+    List<EscrowTransaction> findByEscrow_IdAndType(UUID escrowId, EscrowTransactionType type);
 }
