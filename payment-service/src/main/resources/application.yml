@@ -31,6 +31,17 @@ spring:
 server:
   port: 3006
 
+# JWT — HS256, validate only (re-validate forwarded Bearer token via common-security JwtUtil).
+# No default so startup fails fast if missing; JWT_SECRET is shared in root .env.
+jwt:
+  secret: ${JWT_SECRET}
+
+app:
+  payment:
+    # Countdown / hold window for an unpaid payment. Kept equal to booking-service hold-minutes
+    # so the booking hold and its payment expire together.
+    expire-minutes: ${PAYMENT_EXPIRE_MINUTES:10}
+
 eureka:
   client:
     service-url:
@@ -42,11 +53,21 @@ eureka:
     lease-renewal-interval-in-seconds: 10
     lease-expiration-duration-in-seconds: 30
 
-# Cloudinary — proof image upload for payment screenshots
+# Cloudinary — proof image upload for payment screenshots.
+# Empty defaults so the service boots without keys; CloudinaryService degrades to a placeholder URL.
 cloudinary:
-  cloud-name: ${CLOUDINARY_CLOUD_NAME}
-  api-key: ${CLOUDINARY_API_KEY}
-  api-secret: ${CLOUDINARY_API_SECRET}
+  cloud-name: ${CLOUDINARY_CLOUD_NAME:}
+  api-key: ${CLOUDINARY_API_KEY:}
+  api-secret: ${CLOUDINARY_API_SECRET:}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      redis:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
 
 management:
   endpoints:
