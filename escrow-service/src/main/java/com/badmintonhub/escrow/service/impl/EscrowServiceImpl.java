@@ -1,5 +1,8 @@
 package com.badmintonhub.escrow.service.impl;
 
+import com.badmintonhub.common.exception.ResourceNotFoundException;
+import com.badmintonhub.escrow.dto.response.EscrowAccountResponse;
+import com.badmintonhub.escrow.dto.response.EscrowTransactionResponse;
 import com.badmintonhub.escrow.entity.EscrowAccount;
 import com.badmintonhub.escrow.entity.EscrowTransaction;
 import com.badmintonhub.escrow.entity.enums.EscrowAccountStatus;
@@ -128,6 +131,46 @@ public class EscrowServiceImpl implements EscrowService {
         outboxWriter.writeRefundQueued(matchId, totalRefund);
         log.info("Escrow REFUNDED for matchId={} totalQueued={} ({} player refunds + host remainder)",
                 matchId, totalRefund, playerReimbursements.size());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public EscrowAccountResponse getByMatchId(UUID matchId) {
+        EscrowAccount account = accountRepository.findByMatchId(matchId).orElseThrow(() ->
+                new ResourceNotFoundException("ESCROW_NOT_FOUND", "No escrow account for match " + matchId));
+        List<EscrowTransactionResponse> transactions =
+                transactionRepository.findByEscrow_IdOrderByCreatedAtAsc(account.getId()).stream()
+                        .map(this::toTransactionResponse)
+                        .toList();
+        return new EscrowAccountResponse(
+                account.getId(), account.getMatchId(), account.getCourtOwnerId(), account.getAmount(),
+                account.getReleasedAmount(), account.getStatus(), account.getSettledAt(),
+                account.getCreatedAt(), transactions);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<EscrowTransactionResponse> pendingSettlements() {
+        return transactionRepository.findByTypeAndStatusOrderByCreatedAtAsc(
+                        EscrowTransactionType.COURT_OWNER_SETTLEMENT, EscrowTransactionStatus.PENDING).stream()
+                .map(this::toTransactionResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<EscrowTransactionResponse> pendingRefunds() {
+        return transactionRepository.findByTypeInAndStatusOrderByCreatedAtAsc(
+                        List.of(EscrowTransactionType.HOST_REFUND, EscrowTransactionType.PLAYER_REFUND),
+                        EscrowTransactionStatus.PENDING).stream()
+                .map(this::toTransactionResponse)
+                .toList();
+    }
+
+    private EscrowTransactionResponse toTransactionResponse(EscrowTransaction tx) {
+        return new EscrowTransactionResponse(
+                tx.getId(), tx.getEscrow().getMatchId(), tx.getType(), tx.getFromPartyId(), tx.getToPartyId(),
+                tx.getAmount(), tx.getReferencePaymentId(), tx.getStatus(), tx.getCompletedAt(), tx.getCreatedAt());
     }
 
     private EscrowAccount requireAccount(UUID matchId) {

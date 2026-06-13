@@ -1,6 +1,10 @@
 package com.badmintonhub.escrow.service;
 
+import com.badmintonhub.escrow.dto.response.EscrowAccountResponse;
+import com.badmintonhub.escrow.dto.response.EscrowTransactionResponse;
+
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -22,4 +26,15 @@ public interface EscrowService {
 
     /** match.cancelled → queue PENDING host + player refunds (account → REFUNDED). */
     void refund(UUID matchId);
+
+    // --- STAFF read queues ---
+
+    /** Full escrow state of one match (account + ledger). */
+    EscrowAccountResponse getByMatchId(UUID matchId);
+
+    /** PENDING court-owner settlements awaiting a STAFF bank transfer. */
+    List<EscrowTransactionResponse> pendingSettlements();
+
+    /** PENDING host + player refunds awaiting a STAFF bank transfer. */
+    List<EscrowTransactionResponse> pendingRefunds();
 }
