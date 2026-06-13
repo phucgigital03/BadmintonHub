@@ -64,7 +64,7 @@ Tables with soft delete: `users`, `coaches` — all others use status fields ins
 
 ## Idempotency Guard Tables
 
-`booking-service`, `escrow-service`, and `court-service` each have a `processed_events` table. Check before processing any Kafka event (court-service consumes the `booking.slot.held` / `booking.slot.released` Saga events). booking-service additionally owns an `outbox_events` table for reliable event publishing (Outbox Pattern).
+`booking-service`, `escrow-service`, and `court-service` each have a `processed_events` table. Check before processing any Kafka event (court-service consumes the `booking.slot.held` / `booking.slot.released` Saga events; booking-service also consumes the `payment.player.confirmed` / `payment.player.expired` events). `booking-service` and `payment-service` additionally own an `outbox_events` table for reliable event publishing (Outbox Pattern).
 
 ```sql
 CREATE TABLE processed_events (

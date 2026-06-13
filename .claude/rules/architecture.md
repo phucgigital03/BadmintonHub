@@ -31,8 +31,8 @@ Full design reference: `CLAUDE_Example.md` · ERDs: `ERD_All_Services.md` · Use
 1. **No cross-database FK constraints.** Cross-service refs are UUID only. Consistency via Kafka + Saga.
 2. **No VNPay or third-party payment API.** Payment = Bank QR + proof upload + STAFF manual confirm. Refunds = `manual_refunds` table + STAFF executes bank transfer manually.
 3. **Never hardcode service URLs.** Always `lb://service-name` in Gateway routes. Services resolve via Eureka.
-4. **Outbox Pattern in `matchmaking-service` and `booking-service`.** Save `OutboxEvent` in the same `@Transactional` as the business record. Never publish Kafka directly from a service method. (booking-service uses it for the `booking.slot.held` / `booking.slot.released` slot-hold Saga.)
-5. **Idempotency guard in `booking-service`, `escrow-service`, and `court-service`.** Check `processed_events` before handling any Kafka event. (court-service consumes the slot-hold events.)
+4. **Outbox Pattern in `matchmaking-service`, `booking-service`, and `payment-service`.** Save `OutboxEvent` in the same `@Transactional` as the business record. Never publish Kafka directly from a service method. (booking-service uses it for the `booking.slot.held` / `booking.slot.released` slot-hold Saga; payment-service for all `payment.*` events.)
+5. **Idempotency guard in `booking-service`, `escrow-service`, and `court-service`.** Check `processed_events` before handling any Kafka event. (court-service consumes the slot-hold events; booking-service also consumes the `payment.player.*` events.)
 6. **Zombie event check in `matchmaking-service`.** If match is `CANCELLED` when a late event arrives, publish compensating event — never process the stale event.
 7. **Never silently drop Kafka failures.** After 3 retries (exponential backoff 2s/4s/8s), route to `.DLT` topic via `DeadLetterPublishingRecoverer`.
 8. **Soft delete only.** `users.deleted_at`, `coaches.deleted_at` — never hard delete user or coach data.

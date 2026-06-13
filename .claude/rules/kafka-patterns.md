@@ -10,11 +10,12 @@ alwaysApply: false
 
 | Topic | Producer | Consumers |
 |---|---|---|
-| `payment.host.confirmed` | payment-service | matchmaking-service, escrow-service |
-| `payment.host.expired` | payment-service (scheduler) | matchmaking-service |
-| `payment.player.confirmed` | payment-service | booking-service, escrow-service |
-| `payment.player.expired` | payment-service (scheduler) | matchmaking-service, booking-service |
-| `payment.proof.submitted` | payment-service | notification-service |
+| `payment.host.confirmed` | payment-service (Outbox) | matchmaking-service, escrow-service |
+| `payment.host.expired` | payment-service (Outbox) | matchmaking-service |
+| `payment.player.confirmed` | payment-service (Outbox) | booking-service, escrow-service |
+| `payment.player.expired` | payment-service (Outbox) | matchmaking-service, booking-service |
+| `payment.proof.submitted` | payment-service (Outbox) | notification-service |
+| `payment.refund.processed` | payment-service (Outbox) | notification-service |
 | `payment.refund.queued` | escrow-service | notification-service, payment-service |
 | `match.slot.joined` | matchmaking-service (Outbox) | booking-service, payment-service |
 | `match.cancelled` | matchmaking-service | notification-service, booking-service, escrow-service |
@@ -27,13 +28,17 @@ alwaysApply: false
 
 DLT suffix: `{topic}.DLT` (e.g. `payment.host.confirmed.DLT`)
 
-## Outbox Pattern (matchmaking-service + booking-service)
+## Outbox Pattern (matchmaking-service + booking-service + payment-service)
 
 Save `OutboxEvent` in the **same `@Transactional`** as the business record. A `@Scheduled` job (every 3s) polls `outbox_events WHERE status='PENDING'` and publishes to Kafka.
 
 > **booking-service** uses the Outbox for the slot-hold Saga: `create` / `cancel` / hold-expiry write a
 > `booking.slot.held` / `booking.slot.released` row in the same transaction as the booking change, so
 > court-service is reliably told to flip the slot RESERVED↔AVAILABLE (the grid reflects the hold).
+>
+> **payment-service** writes every `payment.*` event (proof.submitted / host|player.confirmed /
+> host|player.expired / refund.processed) to the Outbox in the same transaction as the `payments.status`
+> change — confirm/reject/refund and the expiry scheduler never call `KafkaTemplate` directly.
 
 ```java
 // Inside MatchService.joinMatch() — one transaction
