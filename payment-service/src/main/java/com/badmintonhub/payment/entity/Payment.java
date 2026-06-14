@@ -101,4 +101,15 @@ public class Payment extends BaseAuditEntity {
 
     @Column(name = "reject_reason")
     private String rejectReason; // set when STAFF rejects the proof
+
+    /**
+     * True when this CONFIRMED payment needs a manual refund the STAFF hasn't done yet — set when
+     * booking-service reports the booking was cancelled after the money was confirmed (orphaned payment).
+     * Cleared once STAFF processes the refund.
+     */
+    @Column(name = "refund_required", nullable = false, columnDefinition = "boolean not null default false")
+    private boolean refundRequired = false;
+
+    @Column(name = "refund_required_reason")
+    private String refundRequiredReason; // why a refund is owed, e.g. BOOKING_CANCELLED
 }

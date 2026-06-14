@@ -33,4 +33,7 @@ public interface PaymentService {
 
     /** The caller's own payment history, newest first. */
     Page<PaymentResponse> listMine(UUID userId, Pageable pageable);
+
+    /** Confirmed payments awaiting a manual refund (booking cancelled after confirm). STAFF/ADMIN. */
+    Page<PaymentResponse> listRefundRequired(Pageable pageable);
 }

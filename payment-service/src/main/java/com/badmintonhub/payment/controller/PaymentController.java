@@ -94,6 +94,14 @@ public class PaymentController {
         return ResponseEntity.ok(paymentService.listMine(UUID.fromString(auth.getName()), pageable));
     }
 
+    /** Confirmed payments awaiting a manual refund (booking cancelled after the money was confirmed). */
+    @GetMapping("/refund-required")
+    @PreAuthorize("hasAnyRole('STAFF','ADMIN')")
+    public ResponseEntity<Page<PaymentResponse>> listRefundRequired(
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
+        return ResponseEntity.ok(paymentService.listRefundRequired(pageable));
+    }
+
     private static Collection<String> roles(Authentication auth) {
         return auth.getAuthorities().stream().map(GrantedAuthority::getAuthority).toList();
     }

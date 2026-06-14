@@ -262,6 +262,7 @@ public class PaymentServiceImpl implements PaymentService {
 
         p.setStatus(PaymentStatus.REFUNDED);
         p.setRefundAmount(req.amount());
+        p.setRefundRequired(false); // refund executed — clear the STAFF action flag
         paymentRepository.save(p);
         outboxWriter.writeRefundProcessed(p);
 
@@ -281,6 +282,12 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional(readOnly = true)
     public Page<PaymentResponse> listMine(UUID userId, Pageable pageable) {
         return paymentRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable).map(this::toResponse);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<PaymentResponse> listRefundRequired(Pageable pageable) {
+        return paymentRepository.findByRefundRequiredTrueOrderByCreatedAtDesc(pageable).map(this::toResponse);
     }
 
     // ---- helpers ----
@@ -329,6 +336,7 @@ public class PaymentServiceImpl implements PaymentService {
                 bank.getAccountNumber(),
                 bank.getAccountName(),
                 bank.getQrImageUrl(),
-                p.getCreatedAt());
+                p.getCreatedAt(),
+                p.isRefundRequired());
     }
 }

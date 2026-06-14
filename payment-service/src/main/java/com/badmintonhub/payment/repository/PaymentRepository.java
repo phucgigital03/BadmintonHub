@@ -20,6 +20,9 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     /** Stale unpaid payments for the expiry scheduler (only PENDING — PROOF_SUBMITTED awaits STAFF). */
     List<Payment> findByStatusAndExpiresAtBefore(PaymentStatus status, LocalDateTime cutoff);
 
+    /** Confirmed payments flagged for a manual refund (orphaned by a cancelled booking), newest first. */
+    Page<Payment> findByRefundRequiredTrueOrderByCreatedAtDesc(Pageable pageable);
+
     /**
      * The current active (PENDING / PROOF_SUBMITTED) payment for a booking, if any. Used by
      * {@code initiate} to stay idempotent — a second initiate for the same booking returns this one
