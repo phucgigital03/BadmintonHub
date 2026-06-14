@@ -3,6 +3,8 @@ package com.badmintonhub.payment.service.impl;
 import com.badmintonhub.common.exception.ConflictException;
 import com.badmintonhub.common.exception.ForbiddenException;
 import com.badmintonhub.common.exception.ResourceNotFoundException;
+import com.badmintonhub.payment.client.BookingServiceClient;
+import com.badmintonhub.payment.client.dto.BookingView;
 import com.badmintonhub.payment.dto.request.InitiatePaymentRequest;
 import com.badmintonhub.payment.dto.request.RefundRequest;
 import com.badmintonhub.payment.dto.response.PaymentResponse;
@@ -11,6 +13,7 @@ import com.badmintonhub.payment.entity.ManualRefund;
 import com.badmintonhub.payment.entity.Payment;
 import com.badmintonhub.payment.entity.PaymentProof;
 import com.badmintonhub.payment.entity.enums.PaymentStatus;
+import com.badmintonhub.payment.entity.enums.PaymentType;
 import com.badmintonhub.payment.messaging.PaymentOutboxWriter;
 import com.badmintonhub.payment.repository.BankAccountRepository;
 import com.badmintonhub.payment.repository.ManualRefundRepository;
@@ -19,6 +22,7 @@ import com.badmintonhub.payment.repository.PaymentRepository;
 import com.badmintonhub.payment.service.CloudinaryService;
 import com.badmintonhub.payment.service.PaymentCountdownService;
 import com.badmintonhub.payment.service.PaymentService;
+import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,6 +32,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Collection;
@@ -45,6 +50,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final CloudinaryService cloudinaryService;
     private final PaymentCountdownService countdownService;
     private final PaymentOutboxWriter outboxWriter;
+    private final BookingServiceClient bookingServiceClient;
 
     /** Countdown / hold window. Non-final so it stays out of the Lombok constructor. */
     @Value("${app.payment.expire-minutes:10}")
@@ -53,6 +59,14 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public PaymentResponse initiate(InitiatePaymentRequest req, UUID userId) {
+        // For a court booking, booking-service is the gatekeeper: it validates the order is still payable
+        // + owned by the caller, re-anchors the hold, and returns the AUTHORITATIVE amount. Fail closed —
+        // never create a payment for a dead/foreign booking, and never trust the client-sent amount.
+        BigDecimal amount = req.amount();
+        if (req.paymentType() == PaymentType.BOOKING && req.bookingId() != null) {
+            amount = beginBookingPayment(req.bookingId());
+        }
+
         BankAccount bank = bankAccountRepository.findFirstByIsActiveTrue()
                 .orElseThrow(() -> new ConflictException("NO_BANK_ACCOUNT",
                         "Chưa cấu hình tài khoản nhận tiền"));
@@ -60,7 +74,7 @@ public class PaymentServiceImpl implements PaymentService {
         Payment p = new Payment();
         p.setUserId(userId);
         p.setBankAccount(bank);
-        p.setAmount(req.amount());
+        p.setAmount(amount);
         p.setPaymentType(req.paymentType());
         p.setBookingId(req.bookingId());
         p.setMatchId(req.matchId());
@@ -75,8 +89,34 @@ public class PaymentServiceImpl implements PaymentService {
         countdownService.start(p.getId(), expiresAt, Duration.ofMinutes(expireMinutes));
 
         log.info("Payment {} (#{}) initiated: user={} type={} amount={} expiresAt={}",
-                p.getId(), p.getOrderCode(), userId, req.paymentType(), req.amount(), expiresAt);
+                p.getId(), p.getOrderCode(), userId, req.paymentType(), amount, expiresAt);
         return toResponse(p);
+    }
+
+    /**
+     * Begin-payment handshake with booking-service (token forwarded). Returns the authoritative amount
+     * (the booking's total). Fails closed: a 4xx means the order can't be paid; any other error means we
+     * couldn't verify it — either way we do NOT create a payment.
+     */
+    private BigDecimal beginBookingPayment(UUID bookingId) {
+        try {
+            BookingView booking = bookingServiceClient.beginPayment(bookingId);
+            return booking.totalPrice();
+        } catch (FeignException e) {
+            if (e.status() >= 400 && e.status() < 500) {
+                log.warn("begin-payment rejected for booking {} (HTTP {}): {}",
+                        bookingId, e.status(), e.getMessage());
+                throw new ConflictException("BOOKING_NOT_PAYABLE",
+                        "Đơn không thể thanh toán (đã huỷ/hết hạn hoặc không thuộc bạn)");
+            }
+            log.warn("begin-payment failed for booking {} (HTTP {}): {}", bookingId, e.status(), e.getMessage());
+            throw new ConflictException("BOOKING_SERVICE_UNAVAILABLE",
+                    "Không xác thực được đơn đặt, vui lòng thử lại");
+        } catch (Exception e) {
+            log.warn("begin-payment call errored for booking {}: {}", bookingId, e.getMessage());
+            throw new ConflictException("BOOKING_SERVICE_UNAVAILABLE",
+                    "Không xác thực được đơn đặt, vui lòng thử lại");
+        }
     }
 
     @Override
