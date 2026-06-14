@@ -83,7 +83,7 @@ public class PaymentServiceImpl implements PaymentService {
         // never create a payment for a dead/foreign booking, and never trust the client-sent amount.
         BigDecimal amount = req.amount();
         if (forBooking) {
-            amount = beginBookingPayment(req.bookingId());
+            amount = beginBookingPayment(req.bookingId()).totalPrice();
         }
 
         BankAccount bank = bankAccountRepository.findFirstByIsActiveTrue()
@@ -140,14 +140,15 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     /**
-     * Begin-payment handshake with booking-service (token forwarded). Returns the authoritative amount
-     * (the booking's total). Fails closed: a 4xx means the order can't be paid; any other error means we
-     * couldn't verify it — either way we do NOT create a payment.
+     * Begin-payment handshake with booking-service (token forwarded): asserts the order is still PENDING +
+     * owned by the caller and re-anchors its hold, returning the authoritative order (its {@code totalPrice}
+     * is the amount to charge). Fails closed: a 4xx means the order can't be paid; any other error means we
+     * couldn't verify it. Used both by {@code initiate} (to charge the right amount) and {@code submitProof}
+     * (to refuse a screenshot for a booking that has since been cancelled/expired).
      */
-    private BigDecimal beginBookingPayment(UUID bookingId) {
+    private BookingView beginBookingPayment(UUID bookingId) {
         try {
-            BookingView booking = bookingServiceClient.beginPayment(bookingId);
-            return booking.totalPrice();
+            return bookingServiceClient.beginPayment(bookingId);
         } catch (FeignException e) {
             if (e.status() >= 400 && e.status() < 500) {
                 log.warn("begin-payment rejected for booking {} (HTTP {}): {}",
@@ -174,6 +175,14 @@ public class PaymentServiceImpl implements PaymentService {
         if (p.getStatus() != PaymentStatus.PENDING && p.getStatus() != PaymentStatus.PROOF_SUBMITTED) {
             throw new ConflictException("INVALID_STATE",
                     "Thanh toán ở trạng thái " + p.getStatus() + " không thể nộp chứng từ");
+        }
+
+        // The payment may still be PENDING while its booking was already cancelled (hold timed out before the
+        // payment did, or the user cancelled) — booking-service is the gatekeeper, so re-validate before
+        // accepting a screenshot. A dead booking → BOOKING_NOT_PAYABLE, no upload. begin-payment also
+        // re-anchors the hold (+10') so the async payment.proof.submitted has time to pause it (no race).
+        if (p.getPaymentType() == PaymentType.BOOKING && p.getBookingId() != null) {
+            beginBookingPayment(p.getBookingId());
         }
 
         String url = cloudinaryService.uploadProof(file);
