@@ -24,6 +24,7 @@ alwaysApply: false
 | `booking.slot.confirmed` | booking-service | matchmaking-service, notification-service, escrow-service |
 | `booking.slot.held` | booking-service (Outbox) | court-service |
 | `booking.slot.released` | booking-service (Outbox) | court-service |
+| `booking.payment.orphaned` | booking-service (Outbox) | payment-service |
 | `escrow.host.reimbursed` | escrow-service | notification-service |
 
 DLT suffix: `{topic}.DLT` (e.g. `payment.host.confirmed.DLT`)
@@ -71,9 +72,10 @@ public void publishPendingEvents() {
 
 Outbox cleanup: delete SENT events older than 30 days (`@Scheduled(cron = "0 0 2 * * *")`).
 
-## Idempotency Guard (booking-service, escrow-service, court-service)
+## Idempotency Guard (booking-service, escrow-service, court-service, payment-service)
 
-Always check `processed_events` before processing. Use the Kafka record key or a UUID from the event payload as `event_id`.
+Always check `processed_events` before processing. (payment-service also consumes — the
+`booking.payment.orphaned` compensation — so it owns a `processed_events` table too.) Use the Kafka record key or a UUID from the event payload as `event_id`.
 
 ```java
 @KafkaListener(topics = "payment.player.confirmed", groupId = "booking-service")
@@ -134,4 +136,4 @@ Admin replay endpoint: `POST /api/admin/kafka/replay?topic={topic.DLT}`
 ## Consumer Group IDs
 
 Each service uses its own name as the consumer group ID (matches `spring.application.name`):
-- `booking-service`, `matchmaking-service`, `escrow-service`, `notification-service`
+- `booking-service`, `matchmaking-service`, `escrow-service`, `notification-service`, `payment-service`
