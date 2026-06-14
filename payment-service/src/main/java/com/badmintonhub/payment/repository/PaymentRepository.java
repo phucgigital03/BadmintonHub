@@ -7,7 +7,9 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface PaymentRepository extends JpaRepository<Payment, UUID> {
@@ -17,4 +19,12 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
 
     /** Stale unpaid payments for the expiry scheduler (only PENDING — PROOF_SUBMITTED awaits STAFF). */
     List<Payment> findByStatusAndExpiresAtBefore(PaymentStatus status, LocalDateTime cutoff);
+
+    /**
+     * The current active (PENDING / PROOF_SUBMITTED) payment for a booking, if any. Used by
+     * {@code initiate} to stay idempotent — a second initiate for the same booking returns this one
+     * instead of creating a duplicate.
+     */
+    Optional<Payment> findFirstByBookingIdAndStatusInOrderByCreatedAtDesc(
+            UUID bookingId, Collection<PaymentStatus> statuses);
 }

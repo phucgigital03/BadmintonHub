@@ -26,6 +26,7 @@ import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -36,6 +37,8 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -52,6 +55,10 @@ public class PaymentServiceImpl implements PaymentService {
     private final PaymentOutboxWriter outboxWriter;
     private final BookingServiceClient bookingServiceClient;
 
+    /** A payment still occupying its booking — a second initiate must reuse it, not create a duplicate. */
+    private static final List<PaymentStatus> ACTIVE_STATUSES =
+            List.of(PaymentStatus.PENDING, PaymentStatus.PROOF_SUBMITTED);
+
     /** Countdown / hold window. Non-final so it stays out of the Lombok constructor. */
     @Value("${app.payment.expire-minutes:10}")
     private long expireMinutes;
@@ -59,11 +66,23 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public PaymentResponse initiate(InitiatePaymentRequest req, UUID userId) {
+        boolean forBooking = req.paymentType() == PaymentType.BOOKING && req.bookingId() != null;
+
+        // Idempotency (double-click / page reload / back button): if this booking already has an active
+        // payment, return that one instead of opening a second. Skips the begin-payment hop so the existing
+        // payment's countdown stays aligned with the booking hold set when it was first opened.
+        if (forBooking) {
+            Optional<PaymentResponse> existing = findActiveBookingPayment(req.bookingId(), userId);
+            if (existing.isPresent()) {
+                return existing.get();
+            }
+        }
+
         // For a court booking, booking-service is the gatekeeper: it validates the order is still payable
         // + owned by the caller, re-anchors the hold, and returns the AUTHORITATIVE amount. Fail closed —
         // never create a payment for a dead/foreign booking, and never trust the client-sent amount.
         BigDecimal amount = req.amount();
-        if (req.paymentType() == PaymentType.BOOKING && req.bookingId() != null) {
+        if (forBooking) {
             amount = beginBookingPayment(req.bookingId());
         }
 
@@ -84,13 +103,40 @@ public class PaymentServiceImpl implements PaymentService {
         p.setExpiresAt(expiresAt);
 
         // flush forces the INSERT so the bigserial order_code is assigned and read back before we respond.
-        paymentRepository.saveAndFlush(p);
+        // The partial unique index (one active payment per booking) is the backstop for a genuine
+        // concurrent race the query above can miss — the loser is turned into a friendly 409.
+        try {
+            paymentRepository.saveAndFlush(p);
+        } catch (DataIntegrityViolationException e) {
+            log.warn("initiate lost a concurrent race for booking {} — active payment already exists",
+                    req.bookingId());
+            throw new ConflictException("PAYMENT_ALREADY_INITIATED",
+                    "Đơn này vừa được khởi tạo thanh toán, vui lòng tải lại");
+        }
 
         countdownService.start(p.getId(), expiresAt, Duration.ofMinutes(expireMinutes));
 
         log.info("Payment {} (#{}) initiated: user={} type={} amount={} expiresAt={}",
                 p.getId(), p.getOrderCode(), userId, req.paymentType(), amount, expiresAt);
         return toResponse(p);
+    }
+
+    /**
+     * Returns the existing active payment for a booking, if any — guarding ownership (only the payer who
+     * opened it, never another user, may reuse it). Empty means no active payment, so a new one is opened.
+     */
+    private Optional<PaymentResponse> findActiveBookingPayment(UUID bookingId, UUID userId) {
+        return paymentRepository
+                .findFirstByBookingIdAndStatusInOrderByCreatedAtDesc(bookingId, ACTIVE_STATUSES)
+                .map(p -> {
+                    if (!p.getUserId().equals(userId)) {
+                        throw new ForbiddenException("FORBIDDEN",
+                                "Đơn này đang được thanh toán bởi người khác");
+                    }
+                    log.info("initiate: reusing active payment {} (#{}) for booking {}",
+                            p.getId(), p.getOrderCode(), bookingId);
+                    return toResponse(p);
+                });
     }
 
     /**
