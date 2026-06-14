@@ -9,5 +9,11 @@ public final class BookingTopics {
     /** A booking was cancelled/expired → court-service flips its slots RESERVED→AVAILABLE. */
     public static final String SLOT_RELEASED = "booking.slot.released";
 
+    /**
+     * A payment was CONFIRMED for a booking that is already CANCELLED (money taken for a dead order) →
+     * payment-service flags it as needing a manual refund. Compensating event (zombie-event pattern).
+     */
+    public static final String PAYMENT_ORPHANED = "booking.payment.orphaned";
+
     private BookingTopics() {}
 }

@@ -2,6 +2,7 @@ package com.badmintonhub.booking.messaging;
 
 import com.badmintonhub.booking.entity.OutboxEvent;
 import com.badmintonhub.booking.entity.enums.OutboxStatus;
+import com.badmintonhub.booking.messaging.event.PaymentOrphanedEvent;
 import com.badmintonhub.booking.messaging.event.SlotHeldEvent;
 import com.badmintonhub.booking.messaging.event.SlotReleasedEvent;
 import com.badmintonhub.booking.repository.OutboxEventRepository;
@@ -33,6 +34,12 @@ public class OutboxWriter {
     public void writeSlotReleased(UUID bookingId, List<UUID> slotIds) {
         String eventId = UUID.randomUUID().toString();
         persist(BookingTopics.SLOT_RELEASED, eventId, new SlotReleasedEvent(eventId, bookingId, slotIds));
+    }
+
+    public void writePaymentOrphaned(UUID paymentId, UUID bookingId) {
+        String eventId = UUID.randomUUID().toString();
+        persist(BookingTopics.PAYMENT_ORPHANED, eventId,
+                new PaymentOrphanedEvent(eventId, paymentId, bookingId, "BOOKING_CANCELLED"));
     }
 
     private void persist(String topic, String eventId, Object payload) {

@@ -95,6 +95,13 @@ public class PaymentEventHandler {
             booking.setHoldExpiresAt(null); // a paid booking must not be picked up by HoldExpiryScheduler
             bookingRepository.save(booking);
             log.info("Booking {} → CONFIRMED (payment {})", booking.getId(), event.paymentId());
+        } else if (booking.getStatus() == BookingStatus.CANCELLED) {
+            // Money was confirmed for a booking that is already cancelled (hold timed out / user cancelled
+            // before STAFF confirmed). We must NOT resurrect it — instead emit a compensating event so
+            // payment-service flags the payment for a manual refund (zombie-event pattern, Never-Violate #6).
+            outboxWriter.writePaymentOrphaned(event.paymentId(), booking.getId());
+            log.warn("Booking {} already CANCELLED but payment {} CONFIRMED → emitting booking.payment.orphaned",
+                    booking.getId(), event.paymentId());
         } else {
             log.debug("Booking {} not PENDING ({}) on payment.confirmed — no-op",
                     booking.getId(), booking.getStatus());
