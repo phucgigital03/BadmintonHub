@@ -14,7 +14,7 @@ alwaysApply: false
 | `payment.host.expired` | payment-service (Outbox) | matchmaking-service |
 | `payment.player.confirmed` | payment-service (Outbox) | booking-service, escrow-service |
 | `payment.player.expired` | payment-service (Outbox) | matchmaking-service, booking-service |
-| `payment.proof.submitted` | payment-service (Outbox) | notification-service |
+| `payment.proof.submitted` | payment-service (Outbox) | notification-service, booking-service |
 | `payment.refund.processed` | payment-service (Outbox) | notification-service |
 | `payment.refund.queued` | escrow-service | notification-service, payment-service |
 | `match.slot.joined` | matchmaking-service (Outbox) | booking-service, payment-service |

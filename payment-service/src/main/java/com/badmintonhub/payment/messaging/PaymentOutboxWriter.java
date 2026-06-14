@@ -34,8 +34,8 @@ public class PaymentOutboxWriter {
 
     public void writeProofSubmitted(Payment p) {
         String eventId = UUID.randomUUID().toString();
-        persist(PaymentTopics.PROOF_SUBMITTED, eventId,
-                new ProofSubmittedEvent(eventId, p.getId(), p.getUserId(), p.getOrderCode()));
+        persist(PaymentTopics.PROOF_SUBMITTED, eventId, new ProofSubmittedEvent(
+                eventId, p.getId(), p.getBookingId(), p.getMatchId(), p.getUserId(), p.getOrderCode()));
     }
 
     public void writeConfirmed(Payment p) {

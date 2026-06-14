@@ -6,6 +6,7 @@ import com.badmintonhub.booking.entity.ProcessedEvent;
 import com.badmintonhub.booking.entity.enums.BookingStatus;
 import com.badmintonhub.booking.messaging.event.PaymentConfirmedEvent;
 import com.badmintonhub.booking.messaging.event.PaymentExpiredEvent;
+import com.badmintonhub.booking.messaging.event.PaymentProofSubmittedEvent;
 import com.badmintonhub.booking.repository.BookingItemRepository;
 import com.badmintonhub.booking.repository.BookingRepository;
 import com.badmintonhub.booking.repository.ProcessedEventRepository;
@@ -39,6 +40,38 @@ public class PaymentEventHandler {
     private final BookingItemRepository bookingItemRepository;
     private final ProcessedEventRepository processedEventRepository;
     private final OutboxWriter outboxWriter;
+
+    /**
+     * Proof submitted → pause the booking hold ({@code hold_expires_at = null}) so HoldExpiryScheduler
+     * stops auto-cancelling. The booking stays PENDING; STAFF confirm/reject (the payment.player.*
+     * events) decides the final outcome. Symmetric with payment-service, which also waits at PROOF_SUBMITTED.
+     */
+    @Transactional
+    public void handleProofSubmitted(String eventId, String payload) {
+        if (alreadyProcessed(eventId)) {
+            return;
+        }
+        PaymentProofSubmittedEvent event = parse(payload, PaymentProofSubmittedEvent.class);
+        if (event.bookingId() == null) {
+            recordProcessed(eventId); // proof for a MATCH_* payment — not ours
+            return;
+        }
+        Booking booking = bookingRepository.findById(event.bookingId()).orElse(null);
+        if (booking == null) {
+            log.warn("payment.proof.submitted for unknown booking {} — skipping", event.bookingId());
+            recordProcessed(eventId);
+            return;
+        }
+        if (booking.getStatus() == BookingStatus.PENDING && booking.getHoldExpiresAt() != null) {
+            booking.setHoldExpiresAt(null); // proof received → stop the auto-cancel clock; STAFF decides
+            bookingRepository.save(booking);
+            log.info("Booking {} hold paused — proof submitted (payment {})", booking.getId(), event.paymentId());
+        } else {
+            log.debug("Booking {} not PENDING-with-hold ({}) on payment.proof.submitted — no-op",
+                    booking.getId(), booking.getStatus());
+        }
+        recordProcessed(eventId);
+    }
 
     /** Payment confirmed → booking PENDING becomes CONFIRMED; held slots stay RESERVED (never released). */
     @Transactional

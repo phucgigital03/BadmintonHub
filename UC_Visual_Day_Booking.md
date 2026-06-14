@@ -193,3 +193,78 @@ sequenceDiagram
     K->>CS: consume → ô RESERVED→AVAILABLE (guard booking_id)
     Note over CS: lưới xanh lại — đặt được tiếp
 ```
+
+## 14. Sequence — luồng FULL có thanh toán (Day 8 đã build)
+
+> Nối tiếp mục 13: sau khi đơn `PENDING` + ô `RESERVED`, FE mở màn **Bank QR**. Hai kết cục:
+> **thành công** = STAFF confirm → `payment.player.confirmed` → booking `CONFIRMED` (ô **giữ** RESERVED);
+> **hết hạn/từ chối** = `payment.player.expired` → booking `CANCELLED` + **nhả ô**.
+> Mọi event payment phát qua **Outbox** (3s); booking consume **idempotent** (`processed_events`) + manual-ack + DLT.
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    actor S as STAFF
+    participant FE as Frontend
+    participant GW as Gateway
+    participant CS as court-service
+    participant BS as booking-service
+    participant PS as payment-service
+    participant K as Kafka
+
+    %% --- Browse + Create + Hold (tóm tắt mục 13) ---
+    U->>FE: Mở trang CLB → chọn ô → "XÁC NHẬN ĐẶT"
+    FE->>GW: POST /api/bookings {items:[{courtId,slotId}...]}
+    GW->>BS: route (verify JWT + EMAIL_VERIFIED)
+    BS->>CS: Feign GET lưới (verify AVAILABLE + chốt giá)
+    CS-->>BS: ô AVAILABLE + price[]
+    BS->>BS: INSERT bookings(PENDING)+items + outbox(held) [1 tx]
+    BS-->>FE: 201 PENDING {bookingId, totalPrice, holdExpiresAt}
+    BS->>K: (Outbox 3s) booking.slot.held
+    K->>CS: consume → ô AVAILABLE→RESERVED (idempotent)
+
+    %% --- Initiate payment (Bank QR) ---
+    FE->>GW: POST /api/payments/initiate {bookingId, paymentType:BOOKING, amount}
+    GW->>PS: route (verify JWT + EMAIL_VERIFIED)
+    PS->>PS: INSERT payments(PENDING, order_code, expires_at=+10') + gán bank active
+    PS->>PS: Redis SET payment:countdown:{id} (fail-open)
+    PS-->>FE: 201 {orderCode #184, bankName/accountNumber/qrImageUrl, amount, expiresAt}
+    Note over FE: Hiện QR ngân hàng + đếm ngược 10' + ô upload ảnh
+
+    %% --- Upload proof ---
+    U->>FE: Chuyển khoản (nội dung #184) → upload ảnh sao kê
+    FE->>GW: POST /api/payments/{id}/proof (multipart)
+    GW->>PS: route (owner hoặc STAFF/ADMIN)
+    PS->>PS: Cloudinary upload (degrade nếu thiếu key) → INSERT payment_proofs
+    PS->>PS: status PROOF_SUBMITTED + outbox(proof.submitted)
+    PS->>K: (Outbox) payment.proof.submitted
+    K->>BS: consume → booking hold_expires_at=null (dừng đồng hồ · STAFF quyết định)
+    Note over K: → notification-service báo STAFF (consumer chưa build)
+
+    alt STAFF xác nhận đúng → THÀNH CÔNG
+        S->>GW: POST /api/payments/{id}/confirm
+        GW->>PS: route (STAFF/ADMIN)
+        PS->>PS: status CONFIRMED + confirmed_by/at + outbox(player.confirmed)
+        PS->>K: (Outbox) payment.player.confirmed
+        K->>BS: consume (groupId booking-service, idempotent processed_events)
+        BS->>BS: booking PENDING→CONFIRMED, hold_expires_at=null
+        Note over BS,CS: KHÔNG nhả ô — lưới vẫn đỏ · HoldExpiryScheduler bỏ qua đơn đã CONFIRMED
+        BS-->>FE: GET /api/bookings/{id} → CONFIRMED
+    else Hết 10' / STAFF từ chối → HUỶ
+        Note over PS: PaymentExpiryScheduler (60s): PENDING quá expires_at  ·  hoặc POST /{id}/reject
+        PS->>PS: status EXPIRED + outbox(player.expired)
+        PS->>K: (Outbox) payment.player.expired
+        K->>BS: consume (idempotent)
+        BS->>BS: booking PENDING→CANCELLED + xoá items + outbox(slot.released)
+        BS->>K: booking.slot.released
+        K->>CS: consume → ô RESERVED→AVAILABLE (guard booking_id)
+        Note over CS: lưới xanh lại — đặt được tiếp
+    end
+```
+
+**Ghi chú khớp code Day 8:**
+- **Hai đồng hồ 10'**: booking `HoldExpiryScheduler` (theo `hold_expires_at`) và payment `PaymentExpiryScheduler` (theo `expires_at`) đều dài 10'. **Trước khi có proof**: cái nào chạy trước huỷ đơn; cái sau **no-op** (đơn không còn `PENDING`) + idempotency. **Khi user upload proof** → booking nghe `payment.proof.submitted` set `hold_expires_at=null` (dừng đồng hồ booking; payment cũng bỏ qua `PROOF_SUBMITTED`) ⇒ **sau proof cả 2 phía chờ STAFF** quyết định (`confirm`→CONFIRMED / `reject`→huỷ + nhả ô). Đặt `PAYMENT_EXPIRE_MINUTES`=`BOOKING_HOLD_MINUTES`.
+- **Topic theo `payment_type`**: BOOKING/MATCH_PLAYER → `payment.player.*`; MATCH_HOST → `payment.host.*`. booking **chỉ** nghe `payment.player.confirmed/expired`; nếu payload `bookingId=null` (vd event MATCH_PLAYER) → booking **ack bỏ qua**.
+- **`order_code`** = Postgres `bigserial` (`@Generated` đọc lại sau INSERT), hiển thị `"#"+value` (vd `#184`) — user ghi vào nội dung chuyển khoản.
+- **Cloudinary degrade**: thiếu key → `image_url = local-fallback://proof/{uuid}` (luồng vẫn chạy để test); điền key thật để upload thật.
+- **API payment mới**: `POST /api/payments/initiate` (USER/COACH + email-verified) · `/{id}/proof` (owner/STAFF, multipart) · `/{id}/confirm` · `/{id}/reject` · `/{id}/refund` (STAFF/ADMIN) · `GET /{id}` · `GET /` (của mình) · `GET /api/bank-accounts/active`. Refund (`/{id}/refund`) = STAFF chuyển khoản tay → `manual_refunds` → `payment.refund.processed`.

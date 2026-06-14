@@ -19,6 +19,13 @@ public class PaymentEventListener {
 
     private final PaymentEventHandler handler;
 
+    @KafkaListener(topics = "payment.proof.submitted", groupId = "booking-service",
+            containerFactory = "manualAckListenerContainerFactory")
+    public void onProofSubmitted(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        handler.handleProofSubmitted(record.key(), record.value());
+        ack.acknowledge();
+    }
+
     @KafkaListener(topics = "payment.player.confirmed", groupId = "booking-service",
             containerFactory = "manualAckListenerContainerFactory")
     public void onPaymentConfirmed(ConsumerRecord<String, String> record, Acknowledgment ack) {
