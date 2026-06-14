@@ -166,6 +166,30 @@ public class BookingServiceImpl implements BookingService {
     }
 
     @Override
+    @Transactional
+    public BookingResponse beginPayment(UUID id, UUID actorId, Collection<String> actorRoles) {
+        Booking booking = bookingRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("BOOKING_NOT_FOUND", "Không tìm thấy đơn đặt"));
+        requireOwnerOrPrivileged(booking, actorId, actorRoles);
+
+        // Gatekeeper: only a still-PENDING order can be paid. Rejects CANCELLED (timed-out/manually
+        // cancelled) and already-CONFIRMED orders so payment-service never charges a dead booking.
+        if (booking.getStatus() != BookingStatus.PENDING) {
+            throw new ConflictException("INVALID_STATE",
+                    "Đơn ở trạng thái " + booking.getStatus() + " không thể thanh toán");
+        }
+
+        // Re-anchor the hold to the payment window so HoldExpiryScheduler won't cancel mid-payment
+        // (the slow-payer gets a full window from the moment they start paying).
+        booking.setHoldExpiresAt(LocalDateTime.now().plusMinutes(holdMinutes));
+        bookingRepository.save(booking);
+
+        log.info("Booking {} claimed for payment by {} — hold re-anchored to {}",
+                id, actorId, booking.getHoldExpiresAt());
+        return toResponse(booking, bookingItemRepository.findByBooking_IdOrderByStartTimeAsc(id));
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Page<BookingResponse> list(UUID actorId, Collection<String> actorRoles, Pageable pageable) {
         Page<Booking> page = isPrivileged(actorRoles)
