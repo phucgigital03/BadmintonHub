@@ -181,9 +181,22 @@
         <!-- Inherited by all modules: surefire runs *Test (unit) in `test`; failsafe runs *IT
              (integration, Testcontainers) in `verify`. Both skipped by -DskipTests. -->
         <plugins>
+            <!-- Byte Buddy (Mockito's inline mock maker) refuses to instrument concrete classes on a JDK
+                 newer than it officially supports — e.g. running tests on JDK 23 while the project targets
+                 21. This flag lets it proceed (experimental) so mocking concrete collaborators works. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>-Dnet.bytebuddy.experimental=true</argLine>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <argLine>-Dnet.bytebuddy.experimental=true</argLine>
+                </configuration>
                 <executions>
                     <execution>
                         <goals>

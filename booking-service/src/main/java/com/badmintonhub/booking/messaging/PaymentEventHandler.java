@@ -56,7 +56,7 @@ public class PaymentEventHandler {
             recordProcessed(eventId); // proof for a MATCH_* payment — not ours
             return;
         }
-        Booking booking = bookingRepository.findById(event.bookingId()).orElse(null);
+        Booking booking = bookingRepository.findByIdForUpdate(event.bookingId()).orElse(null);
         if (booking == null) {
             log.warn("payment.proof.submitted for unknown booking {} — skipping", event.bookingId());
             recordProcessed(eventId);
@@ -84,7 +84,7 @@ public class PaymentEventHandler {
             recordProcessed(eventId); // not a court-booking payment — nothing to do
             return;
         }
-        Booking booking = bookingRepository.findById(event.bookingId()).orElse(null);
+        Booking booking = bookingRepository.findByIdForUpdate(event.bookingId()).orElse(null);
         if (booking == null) {
             log.warn("payment.confirmed for unknown booking {} — skipping", event.bookingId());
             recordProcessed(eventId);
@@ -120,7 +120,7 @@ public class PaymentEventHandler {
             recordProcessed(eventId);
             return;
         }
-        Booking booking = bookingRepository.findById(event.bookingId()).orElse(null);
+        Booking booking = bookingRepository.findByIdForUpdate(event.bookingId()).orElse(null);
         if (booking == null) {
             log.warn("payment.expired for unknown booking {} — skipping", event.bookingId());
             recordProcessed(eventId);
@@ -149,7 +149,13 @@ public class PaymentEventHandler {
     }
 
     private boolean alreadyProcessed(String eventId) {
-        if (eventId != null && processedEventRepository.existsById(eventId)) {
+        if (eventId == null) {
+            // Outbox always sets msgKey = event UUID, so a null key means a misconfigured producer —
+            // idempotency can't dedupe this message. Warn loudly rather than silently risk reprocessing.
+            log.warn("Kafka event arrived with a NULL key — idempotency guard disabled for this message");
+            return false;
+        }
+        if (processedEventRepository.existsById(eventId)) {
             log.debug("Event {} already processed — skipping", eventId);
             return true;
         }
