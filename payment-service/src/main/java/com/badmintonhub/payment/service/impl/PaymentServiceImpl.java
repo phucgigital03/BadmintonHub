@@ -55,9 +55,15 @@ public class PaymentServiceImpl implements PaymentService {
     private final PaymentOutboxWriter outboxWriter;
     private final BookingServiceClient bookingServiceClient;
 
-    /** A payment still occupying its booking — a second initiate must reuse it, not create a duplicate. */
+    /**
+     * A payment still occupying its booking — a second initiate must reuse it, not create a duplicate.
+     * CONFIRMED is included: during the lag between a payment being confirmed and the booking learning of
+     * it (booking still PENDING), a second initiate would otherwise slip past both the active-payment query
+     * and the begin-payment gate and open a duplicate payment (the user could transfer twice). Returning the
+     * CONFIRMED payment makes initiate idempotent ("already paid").
+     */
     private static final List<PaymentStatus> ACTIVE_STATUSES =
-            List.of(PaymentStatus.PENDING, PaymentStatus.PROOF_SUBMITTED);
+            List.of(PaymentStatus.PENDING, PaymentStatus.PROOF_SUBMITTED, PaymentStatus.CONFIRMED);
 
     /** Countdown / hold window. Non-final so it stays out of the Lombok constructor. */
     @Value("${app.payment.expire-minutes:10}")
@@ -170,17 +176,20 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public PaymentResponse submitProof(UUID id, MultipartFile file, UUID actorId, Collection<String> actorRoles) {
-        Payment p = findOr404(id);
-        requireOwnerOrPrivileged(p, actorId, actorRoles);
-
-        if (p.getStatus() != PaymentStatus.PENDING && p.getStatus() != PaymentStatus.PROOF_SUBMITTED) {
-            throw new ConflictException("INVALID_STATE",
-                    "Thanh toán ở trạng thái " + p.getStatus() + " không thể nộp chứng từ");
-        }
+        // Pre-check (no lock): 404 + ownership + fast-fail on an obviously closed payment before uploading.
+        Payment pre = findOr404(id);
+        requireOwnerOrPrivileged(pre, actorId, actorRoles);
+        assertOpenForProof(pre);
 
         // Money-safe: the user may have ALREADY transferred before uploading, so we NEVER discard a proof —
-        // always store it first, then reconcile with booking-service.
+        // upload first. Do it OUTSIDE the row lock: never hold a DB row lock across a Cloudinary network call.
         String url = cloudinaryService.uploadProof(file);
+
+        // Re-load row-locked and RE-CHECK status: a concurrent STAFF reject/confirm may have moved the
+        // payment between the pre-check and now. Fail closed with 409 rather than overwrite — this is what
+        // stops a rejected (EXPIRED) or CONFIRMED payment from being resurrected back to PROOF_SUBMITTED.
+        Payment p = findForUpdateOr404(id);
+        assertOpenForProof(p);
 
         PaymentProof proof = new PaymentProof();
         proof.setPayment(p);
@@ -344,6 +353,14 @@ public class PaymentServiceImpl implements PaymentService {
     private Payment findForUpdateOr404(UUID id) {
         return paymentRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("PAYMENT_NOT_FOUND", "Không tìm thấy thanh toán"));
+    }
+
+    /** A proof can only be attached while the payment is still open (PENDING or already PROOF_SUBMITTED). */
+    private void assertOpenForProof(Payment p) {
+        if (p.getStatus() != PaymentStatus.PENDING && p.getStatus() != PaymentStatus.PROOF_SUBMITTED) {
+            throw new ConflictException("INVALID_STATE",
+                    "Thanh toán ở trạng thái " + p.getStatus() + " không thể nộp chứng từ");
+        }
     }
 
     /** Sets review fields on the most recent proof, if any (reject from PENDING may have none). */

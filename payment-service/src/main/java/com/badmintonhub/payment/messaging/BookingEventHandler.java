@@ -73,10 +73,12 @@ public class BookingEventHandler {
             return;
         }
         RefundRequiredEvent event = parse(payload, RefundRequiredEvent.class);
-        // Row-locked so we don't race a concurrent STAFF confirm/refund on the same payment.
+        // Prefer the CONFIRMED payment (the one actually holding the money) over a stray PROOF_SUBMITTED,
+        // then row-lock it so we don't race a concurrent STAFF confirm/refund on the same payment.
         Payment p = paymentRepository
-                .findFirstByBookingIdAndStatusInOrderByCreatedAtDesc(
-                        event.bookingId(), List.of(PaymentStatus.CONFIRMED, PaymentStatus.PROOF_SUBMITTED))
+                .findFirstByBookingIdAndStatusInOrderByCreatedAtDesc(event.bookingId(), List.of(PaymentStatus.CONFIRMED))
+                .or(() -> paymentRepository.findFirstByBookingIdAndStatusInOrderByCreatedAtDesc(
+                        event.bookingId(), List.of(PaymentStatus.PROOF_SUBMITTED)))
                 .flatMap(found -> paymentRepository.findByIdForUpdate(found.getId()))
                 .orElse(null);
         if (p == null) {
