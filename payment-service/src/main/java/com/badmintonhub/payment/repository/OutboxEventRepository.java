@@ -15,4 +15,7 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
 
     /** Cleanup of already-published rows. */
     void deleteByStatusAndSentAtBefore(OutboxStatus status, LocalDateTime cutoff);
+
+    /** Stuck-publish monitor: events still PENDING long after they were written (broker/publish problem). */
+    long countByStatusAndCreatedAtBefore(OutboxStatus status, LocalDateTime cutoff);
 }

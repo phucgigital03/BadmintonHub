@@ -15,6 +15,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
@@ -40,6 +41,15 @@ public class TimeSlot extends BaseAuditEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
+
+    /**
+     * Optimistic-lock guard against lost updates when two slot-hold events (held / released) for the same
+     * slot are processed concurrently or out of order. The losing transaction gets an
+     * {@code OptimisticLockException} → the Kafka error handler retries → it re-reads the fresh state and
+     * the ownership guard decides correctly.
+     */
+    @Version
+    private long version;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "court_id", nullable = false)

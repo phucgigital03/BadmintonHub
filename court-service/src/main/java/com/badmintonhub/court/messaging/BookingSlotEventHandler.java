@@ -47,7 +47,13 @@ public class BookingSlotEventHandler {
     }
 
     private boolean alreadyProcessed(String eventId) {
-        if (eventId != null && processedEventRepository.existsById(eventId)) {
+        if (eventId == null) {
+            // Outbox always sets msgKey = event UUID, so a null key means a misconfigured producer —
+            // idempotency can't dedupe this message. Warn loudly rather than silently risk reprocessing.
+            log.warn("Kafka event arrived with a NULL key — idempotency guard disabled for this message");
+            return false;
+        }
+        if (processedEventRepository.existsById(eventId)) {
             log.debug("Event {} already processed — skipping", eventId);
             return true;
         }
