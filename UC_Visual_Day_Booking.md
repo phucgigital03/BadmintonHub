@@ -247,9 +247,15 @@ sequenceDiagram
             BS-->>PS: OK · reset hold_expires_at=+10'
             Note over PS,BS: đơn đã huỷ/hết hạn → 409 BOOKING_NOT_PAYABLE → KHÔNG nhận proof (fail-closed)
             PS->>PS: Cloudinary(degrade) + payment_proofs · payment PROOF_SUBMITTED
+            PS-->>FE: 200 PROOF_SUBMITTED (FE hiện "chờ STAFF duyệt")
             PS->>K: (Outbox) payment.proof.submitted
             K->>BS: consume → booking.hold_expires_at=null (vẫn PENDING · DỪNG auto-huỷ)
             Note over BS,PS: sau proof KHÔNG auto-huỷ — chờ STAFF · booking=PENDING (hold=null) · payment=PROOF_SUBMITTED (scheduler bỏ qua vì ≠ PENDING)
+
+            S->>GW: GET /api/payments/pending-review (hàng chờ duyệt, FIFO)
+            GW->>PS: route (STAFF/ADMIN)
+            PS-->>S: danh sách payment PROOF_SUBMITTED
+            Note over S,PS: STAFF tìm proof qua pending-review · notification-service push/email = CHƯA build
 
             alt STAFF confirm → THÀNH CÔNG
                 S->>GW: POST /api/payments/{id}/confirm
@@ -327,4 +333,5 @@ bookings.status (booking_db):
 - **Topic theo `payment_type`**: BOOKING/MATCH_PLAYER → `payment.player.*`; MATCH_HOST → `payment.host.*`. booking **chỉ** nghe `payment.player.confirmed/expired`; nếu payload `bookingId=null` (vd event MATCH_PLAYER) → booking **ack bỏ qua**.
 - **`order_code`** = Postgres `bigserial` (`@Generated` đọc lại sau INSERT), hiển thị `"#"+value` (vd `#184`) — user ghi vào nội dung chuyển khoản.
 - **Cloudinary degrade**: thiếu key → `image_url = local-fallback://proof/{uuid}` (luồng vẫn chạy để test); điền key thật để upload thật.
-- **API payment mới**: `POST /api/payments/initiate` (USER/COACH + email-verified) · `/{id}/proof` (owner/STAFF, multipart) · `/{id}/confirm` · `/{id}/reject` · `/{id}/refund` · `GET /api/payments/refund-required` (STAFF/ADMIN) · `GET /{id}` · `GET /` (của mình) · `GET /api/bank-accounts/active`. Refund (`/{id}/refund`) = STAFF chuyển khoản tay → `manual_refunds` → `payment.refund.processed`.
+- **API payment mới**: `POST /api/payments/initiate` (USER/COACH + email-verified) · `/{id}/proof` (owner/STAFF, multipart) · `/{id}/confirm` · `/{id}/reject` · `/{id}/refund` · `GET /api/payments/pending-review` (STAFF/ADMIN — hàng chờ duyệt, FIFO) · `GET /api/payments/refund-required` (STAFF/ADMIN) · `GET /{id}` · `GET /` (của mình) · `GET /api/bank-accounts/active`. Refund (`/{id}/refund`) = STAFF chuyển khoản tay → `manual_refunds` → `payment.refund.processed`.
+- **STAFF tìm proof để duyệt** (lấp gap): chưa có notification-service → STAFF chủ động gọi **`GET /api/payments/pending-review`** (liệt kê payment `PROOF_SUBMITTED`, cũ nhất trước) rồi `confirm`/`reject`. Khi notification-service lên, `payment.proof.submitted` (đã phát) sẽ push/email cho STAFF — endpoint vẫn là nguồn tra cứu chính.
