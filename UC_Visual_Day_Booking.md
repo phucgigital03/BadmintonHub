@@ -222,59 +222,71 @@ sequenceDiagram
     K->>CS: consume → ô AVAILABLE→RESERVED (lưới đỏ)
     Note over BS,PS: booking=PENDING · payment=(chưa tạo)
 
-    alt User thanh toán kịp trong 10'
+    alt User KHÔNG initiate (bỏ ngay sau khi giữ ô)
+        Note over BS: HoldExpiryScheduler (60s): booking PENDING quá hold_expires_at (10')
+        BS->>BS: booking PENDING→CANCELLED (PAYMENT_TIMEOUT) + xoá items + outbox(released)
+        BS->>K: booking.slot.released
+        K->>CS: ô RESERVED→AVAILABLE (lưới xanh)
+        Note over BS,PS: ❌ booking=CANCELLED · payment=(chưa tạo)
+    else User initiate (mở màn Bank QR)
         FE->>GW: POST /api/payments/initiate {bookingId, BOOKING, amount}
         GW->>PS: route (verify JWT + EMAIL_VERIFIED)
         PS->>BS: (Feign + forward token) POST /api/bookings/{id}/begin-payment
         BS->>BS: gác cổng — đơn PENDING? đúng chủ? · reset hold_expires_at=+10'
         BS-->>PS: BookingResponse (totalPrice = amount CHUẨN)
-        Note over PS,BS: nếu đơn đã huỷ/hết hạn/không thuộc bạn → 409 → PS KHÔNG tạo payment (fail-closed)
+        Note over PS,BS: đơn đã huỷ/hết hạn/không thuộc bạn → 409 → PS KHÔNG tạo payment (fail-closed)
         PS->>PS: INSERT payment + order_code + expires_at=+10' · amount=booking.totalPrice · payment PENDING
         PS-->>FE: 201 {orderCode #184, bank+QR, amount, expiresAt}
         Note over BS,PS: booking=PENDING (hold gia hạn) · payment=PENDING (chờ chuyển khoản)
 
-        U->>FE: chuyển khoản (nội dung #184) → upload ảnh
-        FE->>GW: POST /api/payments/{id}/proof (multipart)
-        GW->>PS: route (owner / STAFF)
-        PS->>PS: Cloudinary(degrade) + payment_proofs · payment PROOF_SUBMITTED
-        PS->>K: (Outbox) payment.proof.submitted
-        K->>BS: consume → booking.hold_expires_at=null (vẫn PENDING · DỪNG auto-huỷ)
-        Note over BS,PS: sau proof KHÔNG auto-huỷ — chờ STAFF · booking=PENDING (hold=null) · payment=PROOF_SUBMITTED (expires_at giữ nguyên, scheduler bỏ qua vì ≠ PENDING)
+        alt User chuyển khoản + upload proof trong 10'
+            U->>FE: chuyển khoản (nội dung #184) → upload ảnh
+            FE->>GW: POST /api/payments/{id}/proof (multipart)
+            GW->>PS: route (owner / STAFF)
+            PS->>BS: (Feign + token) begin-payment — re-validate đơn còn PENDING (lớp 1)
+            BS-->>PS: OK · reset hold_expires_at=+10'
+            Note over PS,BS: đơn đã huỷ/hết hạn → 409 BOOKING_NOT_PAYABLE → KHÔNG nhận proof (fail-closed)
+            PS->>PS: Cloudinary(degrade) + payment_proofs · payment PROOF_SUBMITTED
+            PS->>K: (Outbox) payment.proof.submitted
+            K->>BS: consume → booking.hold_expires_at=null (vẫn PENDING · DỪNG auto-huỷ)
+            Note over BS,PS: sau proof KHÔNG auto-huỷ — chờ STAFF · booking=PENDING (hold=null) · payment=PROOF_SUBMITTED (scheduler bỏ qua vì ≠ PENDING)
 
-        alt STAFF confirm → THÀNH CÔNG
-            S->>GW: POST /api/payments/{id}/confirm
-            GW->>PS: route (STAFF/ADMIN)
-            PS->>PS: set confirmed_by/at · payment PROOF_SUBMITTED→CONFIRMED
-            PS->>K: (Outbox) payment.player.confirmed
-            K->>BS: consume (idempotent) · booking PENDING→CONFIRMED (ô GIỮ RESERVED)
-            Note over BS,PS: ✅ booking=CONFIRMED · payment=CONFIRMED
-            opt Sau này huỷ đơn ĐÃ TRẢ → STAFF hoàn tiền
-                U->>BS: POST /api/bookings/{id}/cancel (hoặc STAFF)
-                BS->>BS: booking CONFIRMED→CANCELLED · refundAmount=%tier×total + outbox(released)
+            alt STAFF confirm → THÀNH CÔNG
+                S->>GW: POST /api/payments/{id}/confirm
+                GW->>PS: route (STAFF/ADMIN)
+                PS->>PS: set confirmed_by/at · payment PROOF_SUBMITTED→CONFIRMED
+                PS->>K: (Outbox) payment.player.confirmed
+                K->>BS: consume (idempotent) · booking PENDING→CONFIRMED (ô GIỮ RESERVED)
+                Note over BS,PS: ✅ booking=CONFIRMED · payment=CONFIRMED
+                opt Sau này huỷ đơn ĐÃ TRẢ → STAFF hoàn tiền
+                    U->>BS: POST /api/bookings/{id}/cancel (hoặc STAFF)
+                    BS->>BS: booking CONFIRMED→CANCELLED · refundAmount=%tier×total + outbox(released)
+                    BS->>K: booking.slot.released
+                    K->>CS: ô RESERVED→AVAILABLE
+                    S->>PS: POST /api/payments/{id}/refund {amount, bank đích}
+                    PS->>PS: INSERT manual_refunds · payment CONFIRMED→REFUNDED
+                    PS->>K: (Outbox) payment.refund.processed
+                    Note over BS,PS: booking=CANCELLED · payment=REFUNDED (STAFF chuyển khoản tay)
+                end
+            else STAFF reject proof → HUỶ
+                S->>GW: POST /api/payments/{id}/reject {reason}
+                GW->>PS: route (STAFF/ADMIN)
+                PS->>PS: set reject_reason · payment PROOF_SUBMITTED→EXPIRED
+                PS->>K: (Outbox) payment.player.expired
+                K->>BS: consume · booking PENDING→CANCELLED + outbox(released)
                 BS->>K: booking.slot.released
-                K->>CS: ô RESERVED→AVAILABLE
-                S->>PS: POST /api/payments/{id}/refund {amount, bank đích}
-                PS->>PS: INSERT manual_refunds · payment CONFIRMED→REFUNDED
-                PS->>K: (Outbox) payment.refund.processed
-                Note over BS,PS: booking=CANCELLED · payment=REFUNDED (STAFF chuyển khoản tay)
+                K->>CS: ô RESERVED→AVAILABLE (lưới xanh)
+                Note over BS,PS: ❌ booking=CANCELLED · payment=EXPIRED
             end
-        else STAFF reject proof → HUỶ
-            S->>GW: POST /api/payments/{id}/reject {reason}
-            GW->>PS: route (STAFF/ADMIN)
-            PS->>PS: set reject_reason · payment PROOF_SUBMITTED→EXPIRED
+        else User initiate XONG rồi BỎ MẶC (không upload proof) — hai đồng hồ 10' tự nổ
+            Note over PS: PaymentExpiryScheduler (60s): payment PENDING quá expires_at → PENDING→EXPIRED (chỉ PENDING · PROOF_SUBMITTED bỏ qua)
             PS->>K: (Outbox) payment.player.expired
-            K->>BS: consume · booking PENDING→CANCELLED + outbox(released)
+            K->>BS: consume → booking còn PENDING → CANCELLED + outbox(released) · đã CANCELLED → no-op (idempotent)
+            Note over BS: (độc lập) HoldExpiryScheduler cũng huỷ booking nếu chưa bị huỷ — cái nào nổ trước thắng, cái sau no-op
             BS->>K: booking.slot.released
             K->>CS: ô RESERVED→AVAILABLE (lưới xanh)
-            Note over BS,PS: ❌ booking=CANCELLED · payment=EXPIRED
+            Note over BS,PS: ❌ booking=CANCELLED · payment=EXPIRED · ô AVAILABLE
         end
-    else User KHÔNG trả trong 10' (chưa initiate / chưa proof)
-        Note over BS: HoldExpiryScheduler (60s): booking PENDING quá hold_expires_at
-        BS->>BS: booking PENDING→CANCELLED (PAYMENT_TIMEOUT) + xoá items + outbox(released)
-        BS->>K: booking.slot.released
-        K->>CS: ô RESERVED→AVAILABLE (lưới xanh)
-        Note over PS: nếu đã initiate → PaymentExpiryScheduler: payment PENDING→EXPIRED (cái nào trước, cái sau no-op)
-        Note over BS,PS: ❌ booking=CANCELLED · payment=EXPIRED (nếu đã initiate) hoặc (chưa tạo)
     end
 ```
 
@@ -287,7 +299,8 @@ sequenceDiagram
 | Upload proof | `POST /{id}/proof` | PENDING (hold=null · dừng đồng hồ) | **PROOF_SUBMITTED** | RESERVED |
 | STAFF confirm | `POST /{id}/confirm` | **CONFIRMED** | **CONFIRMED** | RESERVED (giữ) |
 | STAFF reject | `POST /{id}/reject` | **CANCELLED** | **EXPIRED** | RESERVED → **AVAILABLE** (nhả) |
-| Hết 10' chưa proof | scheduler tự động | **CANCELLED** | **EXPIRED** (nếu đã initiate) / *(chưa tạo)* | RESERVED → **AVAILABLE** (nhả) |
+| Chưa initiate, hết 10' | `HoldExpiryScheduler` | **CANCELLED** (PAYMENT_TIMEOUT) | *(chưa tạo)* | RESERVED → **AVAILABLE** (nhả) |
+| **Initiate rồi bỏ mặc** (không proof), hết 10' | `PaymentExpiryScheduler` + `HoldExpiryScheduler` (độc lập) | **CANCELLED** | **EXPIRED** | RESERVED → **AVAILABLE** (nhả) |
 | Huỷ đơn đã trả + hoàn tiền | `cancel` + `POST /{id}/refund` | **CANCELLED** | **REFUNDED** | RESERVED → **AVAILABLE** (nhả) |
 
 ### 14.2 State machine (2 thực thể độc lập, đồng bộ qua Kafka)
@@ -308,7 +321,7 @@ bookings.status (booking_db):
 **Ghi chú khớp code Day 8:**
 - **Handshake `initiate` (fail-closed)**: payment-service gọi booking-service `POST /api/bookings/{id}/begin-payment` (Feign `lb://`, **forward token user**) TRƯỚC khi tạo payment. booking là **người gác cổng**: đơn phải `PENDING` + đúng chủ → reset `hold_expires_at=now+10'` + trả `totalPrice` làm **amount chuẩn** (bỏ amount client gửi). Đơn đã `CANCELLED`/hết hạn/không thuộc bạn → **409 `BOOKING_NOT_PAYABLE`**, payment KHÔNG được tạo → hết cảnh "trả tiền cho đơn đã chết". booking-service lỗi/không tới → **409 `BOOKING_SERVICE_UNAVAILABLE`** (fail-closed, mirror cách booking fail-closed khi court lỗi).
 - **`initiate` idempotent (chống double-initiate)**: gọi `initiate` 2 lần cho cùng `bookingId` → KHÔNG tạo 2 payment. Trước khi tạo, payment-service tra payment **đang active** (`PENDING`/`PROOF_SUBMITTED`) của booking đó → có thì **trả lại chính nó** (giữ nguyên countdown, KHÔNG gọi lại begin-payment để đồng hồ payment vẫn khớp hold booking; check chủ sở hữu — người khác đụng vào → 403). Chốt chặn DB: **partial unique index** `uk_payments_active_booking ON payments(booking_id) WHERE booking_id IS NOT NULL AND status IN ('PENDING','PROOF_SUBMITTED')` (đơn được phép tích nhiều payment `EXPIRED` cũ nên unique phải là **partial**, KHÔNG full-column) → race đồng thời thật mà query bỏ lọt thì kẻ thua nhận **409 `PAYMENT_ALREADY_INITIATED`** thay vì tạo trùng.
-- **Hai đồng hồ 10'**: booking `HoldExpiryScheduler` (theo `hold_expires_at`) và payment `PaymentExpiryScheduler` (theo `expires_at`) đều dài 10'. **Trước khi có proof**: cái nào chạy trước huỷ đơn; cái sau **no-op** (đơn không còn `PENDING`) + idempotency. **Khi user upload proof** → booking nghe `payment.proof.submitted` set `hold_expires_at=null` (dừng đồng hồ booking; payment cũng bỏ qua `PROOF_SUBMITTED`) ⇒ **sau proof cả 2 phía chờ STAFF** quyết định (`confirm`→CONFIRMED / `reject`→huỷ + nhả ô). Đặt `PAYMENT_EXPIRE_MINUTES`=`BOOKING_HOLD_MINUTES`.
+- **Hai đồng hồ 10'**: booking `HoldExpiryScheduler` (theo `hold_expires_at`) và payment `PaymentExpiryScheduler` (theo `expires_at`) đều dài 10', chạy mỗi 60s, **độc lập ở 2 service**. **Initiate rồi BỎ MẶC (không upload proof)**: `PaymentExpiryScheduler` đưa payment `PENDING→EXPIRED` + phát `payment.player.expired`; `HoldExpiryScheduler` đưa booking `PENDING→CANCELLED` + nhả ô. Cái nào nổ trước thắng, cái sau **no-op** (record không còn `PENDING`) + idempotency — kết cục **booking=CANCELLED · payment=EXPIRED · ô AVAILABLE** (booking bị huỷ do `HoldExpiryScheduler` trực tiếp HOẶC do consume `payment.player.expired`, tuỳ cái nào trước). ⚠️ `PaymentExpiryScheduler` **chỉ** đụng `PENDING` — KHÔNG đụng `PROOF_SUBMITTED` (đã nộp tiền, chờ STAFF). **Khi user upload proof** → booking nghe `payment.proof.submitted` set `hold_expires_at=null` (dừng đồng hồ booking) ⇒ **sau proof cả 2 phía chờ STAFF** quyết định (`confirm`→CONFIRMED / `reject`→huỷ + nhả ô). Đặt `PAYMENT_EXPIRE_MINUTES`=`BOOKING_HOLD_MINUTES`.
 - **Nộp proof cho đơn ĐÃ HUỶ → 409, KHÔNG nhận** (lớp 1): `submitProof` (loại BOOKING) gọi lại `begin-payment` (Feign + token, fail-closed) **TRƯỚC** khi upload. Đơn đã `CANCELLED`/hết hạn (vd `HoldExpiryScheduler` nổ trước `PaymentExpiryScheduler` ~60' do tick 2 service lệch pha, rồi user nộp proof phút chót) → **409 `BOOKING_NOT_PAYABLE`**, KHÔNG upload, KHÔNG đổi status. Handshake còn re-anchor `hold_expires_at=now+10'` → đủ thời gian cho `payment.proof.submitted` về set `hold=null` (diệt nốt race Kafka-lag). booking lỗi → **409 `BOOKING_SERVICE_UNAVAILABLE`**.
 - **Confirm trúng đơn ĐÃ HUỶ → bù trừ hoàn tiền** (lớp 2): nếu vẫn lọt (user nộp proof hợp lệ **rồi tự huỷ đơn** trước khi STAFF confirm) → `handleConfirmed` thấy booking `CANCELLED` → KHÔNG hồi sinh, phát `booking.payment.orphaned` (Outbox, zombie-event pattern) → payment-service (consumer đầu tiên + `processed_events`) gắn cờ **`refundRequired=true`** trên payment đã `CONFIRMED` (tiền đã vào). STAFF thấy qua `GET /api/payments/refund-required` rồi hoàn tiền tay (`/{id}/refund` → đóng cờ). **Tiền không bị nuốt im lặng nữa.**
 - **Topic theo `payment_type`**: BOOKING/MATCH_PLAYER → `payment.player.*`; MATCH_HOST → `payment.host.*`. booking **chỉ** nghe `payment.player.confirmed/expired`; nếu payload `bookingId=null` (vd event MATCH_PLAYER) → booking **ack bỏ qua**.
