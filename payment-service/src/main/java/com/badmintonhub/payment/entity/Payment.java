@@ -112,4 +112,12 @@ public class Payment extends BaseAuditEntity {
 
     @Column(name = "refund_required_reason")
     private String refundRequiredReason; // why a refund is owed, e.g. BOOKING_CANCELLED
+
+    /**
+     * Policy-computed refund amount suggested by booking-service when a paid booking was cancelled in the
+     * refund window (carried on {@code booking.refund.required}). Shown in the STAFF refund queue so they
+     * don't recompute the tier; null for an orphaned payment where the booker owed nothing yet (full refund).
+     */
+    @Column(name = "refund_required_amount", precision = 12, scale = 2)
+    private BigDecimal refundRequiredAmount;
 }

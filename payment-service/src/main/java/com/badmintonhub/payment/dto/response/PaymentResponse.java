@@ -29,5 +29,6 @@ public record PaymentResponse(
         String accountName,
         String qrImageUrl,
         LocalDateTime createdAt,
-        boolean refundRequired
+        boolean refundRequired,
+        BigDecimal refundRequiredAmount
 ) {}

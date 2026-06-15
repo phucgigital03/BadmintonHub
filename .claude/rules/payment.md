@@ -44,12 +44,22 @@ Scheduler (every 1 min):
 STAFF processes refund:
 POST /api/payments/{id}/refund  (STAFF/ADMIN only)
   Body: { amount, toBankName, toAccountNumber, toAccountName, refundNote }
+  → row-locked load (SELECT … FOR UPDATE) so two concurrent refunds can't both transfer
+  → reject if amount > payments.amount  → 409 REFUND_EXCEEDS_PAID  (never refund more than was paid)
   → INSERT manual_refunds
-  → payments.status = REFUNDED, payments.refund_amount = amount
+  → payments.status = REFUNDED, payments.refund_amount = amount, refund_required = false
   → Kafka: payment.refund.processed → user notified
 
 No automated refund. STAFF physically executes the bank transfer, then records it.
 ```
+
+**Refund-required queue.** A payment is flagged `refund_required = true` (surfaced by
+`GET /api/payments/refund-required`) when booking-service reports the money is owed back:
+- `booking.payment.orphaned` — a `payment.player.confirmed` landed on an already-CANCELLED booking.
+- `booking.refund.required` — a CONFIRMED (paid) booking was cancelled within the refund window; the
+  event carries the policy-computed amount → stored in `payments.refund_required_amount` as the suggested
+  transfer (STAFF doesn't recompute the tier). Refund is allowed from CONFIRMED, or from PROOF_SUBMITTED
+  when the flag is set (user transferred for a booking that was already cancelled).
 
 ## payment_type Values
 

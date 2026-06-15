@@ -229,7 +229,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public PaymentResponse confirm(UUID id, UUID staffId) {
-        Payment p = findOr404(id);
+        Payment p = findForUpdateOr404(id);
         if (p.getStatus() != PaymentStatus.PROOF_SUBMITTED) {
             throw new ConflictException("INVALID_STATE",
                     "Chỉ xác nhận được thanh toán đã nộp chứng từ (hiện: " + p.getStatus() + ")");
@@ -249,7 +249,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public PaymentResponse reject(UUID id, String reason, UUID staffId) {
-        Payment p = findOr404(id);
+        Payment p = findForUpdateOr404(id);
         if (p.getStatus() != PaymentStatus.PENDING && p.getStatus() != PaymentStatus.PROOF_SUBMITTED) {
             throw new ConflictException("INVALID_STATE",
                     "Không thể từ chối thanh toán ở trạng thái " + p.getStatus());
@@ -268,7 +268,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public PaymentResponse refund(UUID id, RefundRequest req, UUID staffId) {
-        Payment p = findOr404(id);
+        Payment p = findForUpdateOr404(id);
         // Refundable when CONFIRMED, or when flagged for refund while still PROOF_SUBMITTED (user transferred
         // for a booking that had already been cancelled — money arrived but we never confirmed a dead order).
         boolean refundable = p.getStatus() == PaymentStatus.CONFIRMED
@@ -276,6 +276,13 @@ public class PaymentServiceImpl implements PaymentService {
         if (!refundable) {
             throw new ConflictException("INVALID_STATE",
                     "Chỉ hoàn tiền cho thanh toán đã xác nhận hoặc đơn đã huỷ cần hoàn (hiện: " + p.getStatus() + ")");
+        }
+
+        // Money-safe cap: never refund more than was actually paid (fat-finger / abuse guard). The DTO
+        // already enforces amount > 0; here we bound it from above by the captured amount.
+        if (req.amount().compareTo(p.getAmount()) > 0) {
+            throw new ConflictException("REFUND_EXCEEDS_PAID",
+                    "Số tiền hoàn (" + req.amount() + ") vượt quá số đã thanh toán (" + p.getAmount() + ")");
         }
 
         ManualRefund refund = new ManualRefund();
@@ -333,6 +340,12 @@ public class PaymentServiceImpl implements PaymentService {
                 .orElseThrow(() -> new ResourceNotFoundException("PAYMENT_NOT_FOUND", "Không tìm thấy thanh toán"));
     }
 
+    /** Row-locked variant for the STAFF state transitions (confirm / reject / refund) — see repo Javadoc. */
+    private Payment findForUpdateOr404(UUID id) {
+        return paymentRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new ResourceNotFoundException("PAYMENT_NOT_FOUND", "Không tìm thấy thanh toán"));
+    }
+
     /** Sets review fields on the most recent proof, if any (reject from PENDING may have none). */
     private void markLatestProofReviewed(Payment p, UUID staffId, String note) {
         paymentProofRepository.findByPayment_IdOrderByUploadedAtDesc(p.getId()).stream().findFirst()
@@ -373,6 +386,7 @@ public class PaymentServiceImpl implements PaymentService {
                 bank.getAccountName(),
                 bank.getQrImageUrl(),
                 p.getCreatedAt(),
-                p.isRefundRequired());
+                p.isRefundRequired(),
+                p.getRefundRequiredAmount());
     }
 }
