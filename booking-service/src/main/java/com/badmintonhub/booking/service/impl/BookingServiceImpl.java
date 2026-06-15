@@ -168,7 +168,8 @@ public class BookingServiceImpl implements BookingService {
     @Override
     @Transactional
     public BookingResponse beginPayment(UUID id, UUID actorId, Collection<String> actorRoles) {
-        Booking booking = bookingRepository.findById(id)
+        // Row-locked: serialises against a concurrent cancel / payment.* handler on the same booking.
+        Booking booking = bookingRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("BOOKING_NOT_FOUND", "Không tìm thấy đơn đặt"));
         requireOwnerOrPrivileged(booking, actorId, actorRoles);
 
@@ -201,7 +202,9 @@ public class BookingServiceImpl implements BookingService {
     @Override
     @Transactional
     public BookingResponse cancel(UUID id, UUID actorId, Collection<String> actorRoles, String reason) {
-        Booking booking = bookingRepository.findById(id)
+        // Row-locked: serialises against a concurrent payment.confirmed handler so we never lose-update
+        // its CONFIRMED write (which would drop the refund flag and silently keep the user's money).
+        Booking booking = bookingRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("BOOKING_NOT_FOUND", "Không tìm thấy đơn đặt"));
         requireOwnerOrPrivileged(booking, actorId, actorRoles);
 
@@ -228,6 +231,14 @@ public class BookingServiceImpl implements BookingService {
 
         // Outbox (same tx): tell court-service to flip these slots back to AVAILABLE.
         outboxWriter.writeSlotReleased(id, slotIds);
+
+        // Money path: a paid order cancelled within the refund window owes the user money. Tell
+        // payment-service to flag the payment for a manual refund (with the policy-computed amount) so it
+        // surfaces in the STAFF refund queue — otherwise this refund tier would be a silent dead end.
+        // refund == 0 (cancelled <2h before, 0% tier) keeps the money legitimately → no event.
+        if (wasConfirmed && refund.signum() > 0) {
+            outboxWriter.writeRefundRequired(id, refund, "BOOKING_CANCELLED_BY_USER");
+        }
 
         log.info("Booking {} cancelled by {} (wasPaid={}), refund={}", id, actorId, wasConfirmed, refund);
         return toResponse(booking, List.of());

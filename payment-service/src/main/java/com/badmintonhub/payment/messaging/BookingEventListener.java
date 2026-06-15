@@ -25,4 +25,11 @@ public class BookingEventListener {
         handler.handleOrphaned(record.key(), record.value());
         ack.acknowledge();
     }
+
+    @KafkaListener(topics = "booking.refund.required", groupId = "payment-service",
+            containerFactory = "manualAckListenerContainerFactory")
+    public void onRefundRequired(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        handler.handleRefundRequired(record.key(), record.value());
+        ack.acknowledge();
+    }
 }

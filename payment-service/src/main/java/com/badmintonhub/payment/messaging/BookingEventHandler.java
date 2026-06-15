@@ -4,6 +4,7 @@ import com.badmintonhub.payment.entity.Payment;
 import com.badmintonhub.payment.entity.ProcessedEvent;
 import com.badmintonhub.payment.entity.enums.PaymentStatus;
 import com.badmintonhub.payment.messaging.event.PaymentOrphanedEvent;
+import com.badmintonhub.payment.messaging.event.RefundRequiredEvent;
 import com.badmintonhub.payment.repository.PaymentRepository;
 import com.badmintonhub.payment.repository.ProcessedEventRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,6 +12,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 /**
  * Transactional handling of booking-service compensations. The payment mutation + the idempotency-guard row
@@ -34,12 +37,11 @@ public class BookingEventHandler {
      */
     @Transactional
     public void handleOrphaned(String eventId, String payload) {
-        if (eventId != null && processedEventRepository.existsById(eventId)) {
-            log.debug("Event {} already processed — skipping", eventId);
+        if (alreadyProcessed(eventId)) {
             return;
         }
-        PaymentOrphanedEvent event = parse(payload);
-        Payment p = paymentRepository.findById(event.paymentId()).orElse(null);
+        PaymentOrphanedEvent event = parse(payload, PaymentOrphanedEvent.class);
+        Payment p = paymentRepository.findByIdForUpdate(event.paymentId()).orElse(null);
         if (p == null) {
             log.warn("booking.payment.orphaned for unknown payment {} — skipping", event.paymentId());
             recordProcessed(eventId);
@@ -58,18 +60,71 @@ public class BookingEventHandler {
         recordProcessed(eventId);
     }
 
+    /**
+     * booking.refund.required → a paid (CONFIRMED) booking was cancelled within the refund window. Flag the
+     * booking's active payment for a manual refund and store the policy-computed suggested amount, so it
+     * surfaces in the STAFF refund queue ({@code /refund-required}). Without this the refund tier computed
+     * by booking-service would be a silent dead end and the user would never get their money back. The
+     * payment stays CONFIRMED — STAFF executes the bank transfer via {@code /refund}.
+     */
+    @Transactional
+    public void handleRefundRequired(String eventId, String payload) {
+        if (alreadyProcessed(eventId)) {
+            return;
+        }
+        RefundRequiredEvent event = parse(payload, RefundRequiredEvent.class);
+        // Row-locked so we don't race a concurrent STAFF confirm/refund on the same payment.
+        Payment p = paymentRepository
+                .findFirstByBookingIdAndStatusInOrderByCreatedAtDesc(
+                        event.bookingId(), List.of(PaymentStatus.CONFIRMED, PaymentStatus.PROOF_SUBMITTED))
+                .flatMap(found -> paymentRepository.findByIdForUpdate(found.getId()))
+                .orElse(null);
+        if (p == null) {
+            // No live payment to refund (never paid, or already REFUNDED/EXPIRED) — nothing to flag.
+            log.warn("booking.refund.required for booking {} but no CONFIRMED/PROOF payment — skipping",
+                    event.bookingId());
+            recordProcessed(eventId);
+            return;
+        }
+        if (!p.isRefundRequired()) {
+            p.setRefundRequired(true);
+            p.setRefundRequiredReason(event.reason()); // BOOKING_CANCELLED_BY_USER
+            p.setRefundRequiredAmount(event.refundAmount());
+            paymentRepository.save(p);
+            log.warn("Payment {} flagged refund-required — paid booking {} cancelled (reason={}, amount={})",
+                    p.getId(), event.bookingId(), event.reason(), event.refundAmount());
+        } else {
+            log.debug("Payment {} already refund-required — no-op", p.getId());
+        }
+        recordProcessed(eventId);
+    }
+
+    private boolean alreadyProcessed(String eventId) {
+        if (eventId == null) {
+            // Outbox always sets msgKey = event UUID, so a null key means a misconfigured producer —
+            // idempotency can't dedupe this message. Warn loudly rather than silently risk reprocessing.
+            log.warn("Kafka event arrived with a NULL key — idempotency guard disabled for this message");
+            return false;
+        }
+        if (processedEventRepository.existsById(eventId)) {
+            log.debug("Event {} already processed — skipping", eventId);
+            return true;
+        }
+        return false;
+    }
+
     private void recordProcessed(String eventId) {
         if (eventId != null) {
             processedEventRepository.save(new ProcessedEvent(eventId));
         }
     }
 
-    private PaymentOrphanedEvent parse(String payload) {
+    private <T> T parse(String payload, Class<T> type) {
         try {
-            return objectMapper.readValue(payload, PaymentOrphanedEvent.class);
+            return objectMapper.readValue(payload, type);
         } catch (Exception e) {
             // Unparseable payload → throw so the error handler retries then routes to the DLT.
-            throw new IllegalStateException("Cannot parse PaymentOrphanedEvent payload: " + e.getMessage(), e);
+            throw new IllegalStateException("Cannot parse " + type.getSimpleName() + " payload: " + e.getMessage(), e);
         }
     }
 }

@@ -3,6 +3,7 @@ package com.badmintonhub.booking.messaging;
 import com.badmintonhub.booking.entity.OutboxEvent;
 import com.badmintonhub.booking.entity.enums.OutboxStatus;
 import com.badmintonhub.booking.messaging.event.PaymentOrphanedEvent;
+import com.badmintonhub.booking.messaging.event.RefundRequiredEvent;
 import com.badmintonhub.booking.messaging.event.SlotHeldEvent;
 import com.badmintonhub.booking.messaging.event.SlotReleasedEvent;
 import com.badmintonhub.booking.repository.OutboxEventRepository;
@@ -11,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -40,6 +42,13 @@ public class OutboxWriter {
         String eventId = UUID.randomUUID().toString();
         persist(BookingTopics.PAYMENT_ORPHANED, eventId,
                 new PaymentOrphanedEvent(eventId, paymentId, bookingId, "BOOKING_CANCELLED"));
+    }
+
+    /** A paid booking was cancelled in the refund window → tell payment to flag a refund of {@code amount}. */
+    public void writeRefundRequired(UUID bookingId, BigDecimal refundAmount, String reason) {
+        String eventId = UUID.randomUUID().toString();
+        persist(BookingTopics.REFUND_REQUIRED, eventId,
+                new RefundRequiredEvent(eventId, bookingId, refundAmount, reason));
     }
 
     private void persist(String topic, String eventId, Object payload) {

@@ -25,6 +25,7 @@ alwaysApply: false
 | `booking.slot.held` | booking-service (Outbox) | court-service |
 | `booking.slot.released` | booking-service (Outbox) | court-service |
 | `booking.payment.orphaned` | booking-service (Outbox) | payment-service |
+| `booking.refund.required` | booking-service (Outbox) | payment-service |
 | `escrow.host.reimbursed` | escrow-service | notification-service |
 
 DLT suffix: `{topic}.DLT` (e.g. `payment.host.confirmed.DLT`)
@@ -40,6 +41,11 @@ Save `OutboxEvent` in the **same `@Transactional`** as the business record. A `@
 > **payment-service** writes every `payment.*` event (proof.submitted / host|player.confirmed /
 > host|player.expired / refund.processed) to the Outbox in the same transaction as the `payments.status`
 > change — confirm/reject/refund and the expiry scheduler never call `KafkaTemplate` directly.
+>
+> **booking-service** also emits `booking.refund.required` (Outbox) from `cancel()` when a CONFIRMED
+> (already-paid) order is cancelled within the refund window — it carries the policy-computed refund
+> amount so payment-service flags the matching payment for a manual refund (otherwise the refund tier
+> would be a silent dead end). Pair with `booking.payment.orphaned` (cancel-vs-confirm raced the other way).
 
 ```java
 // Inside MatchService.joinMatch() — one transaction
@@ -74,8 +80,10 @@ Outbox cleanup: delete SENT events older than 30 days (`@Scheduled(cron = "0 0 2
 
 ## Idempotency Guard (booking-service, escrow-service, court-service, payment-service)
 
-Always check `processed_events` before processing. (payment-service also consumes — the
-`booking.payment.orphaned` compensation — so it owns a `processed_events` table too.) Use the Kafka record key or a UUID from the event payload as `event_id`.
+Always check `processed_events` before processing. (payment-service also consumes the
+`booking.payment.orphaned` + `booking.refund.required` compensations — so it owns a `processed_events`
+table too.) Use the Kafka record key or a UUID from the event payload as `event_id`. A **null** key means
+a misconfigured producer (the Outbox always sets `msgKey` = event UUID) — log a warning, don't dedupe silently.
 
 ```java
 @KafkaListener(topics = "payment.player.confirmed", groupId = "booking-service")
