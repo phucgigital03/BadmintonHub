@@ -58,7 +58,7 @@ public class BookingServiceImpl implements BookingService {
     private final OutboxWriter outboxWriter;
 
     /** PENDING hold window (= payment window). Non-final so it stays out of the Lombok constructor. */
-    @Value("${app.booking.hold-minutes:10}")
+    @Value("${app.booking.hold-minutes:15}")
     private long holdMinutes;
 
     @Override

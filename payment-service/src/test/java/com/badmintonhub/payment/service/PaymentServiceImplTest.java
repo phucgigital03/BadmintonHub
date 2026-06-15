@@ -114,11 +114,13 @@ class PaymentServiceImplTest {
         open.setUserId(actor);
         open.setStatus(PaymentStatus.PENDING);
         open.setBankAccount(new BankAccount());
-        // …but by the time we take the lock, STAFF has rejected it (EXPIRED).
+        // …but by the time we take the lock, STAFF has rejected it (EXPIRED + a rejectReason — which marks it
+        // a genuine reject, not a mere countdown timeout, so the proof must NOT be salvaged).
         Payment rejected = new Payment();
         rejected.setId(id);
         rejected.setUserId(actor);
         rejected.setStatus(PaymentStatus.EXPIRED);
+        rejected.setRejectReason("bogus proof");
         rejected.setBankAccount(new BankAccount());
 
         when(paymentRepository.findById(id)).thenReturn(Optional.of(open));
@@ -156,5 +158,82 @@ class PaymentServiceImplTest {
         assertThat(resp.status()).isEqualTo(PaymentStatus.CONFIRMED);
         verify(bookingServiceClient, never()).beginPayment(any()); // no second handshake
         verify(paymentRepository, never()).saveAndFlush(any());    // no duplicate payment created
+    }
+
+    // ---- P0-1: a proof that arrives AFTER the countdown timed out is salvaged, never lost ----
+
+    @Test
+    void submitProof_timedOutPaymentReceivesLateProof_keepsProofAndFlagsRefund() {
+        UUID id = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        // Expired by the scheduler (no rejectReason) — the payer may have transferred just before the deadline.
+        Payment timedOut = new Payment();
+        timedOut.setId(id);
+        timedOut.setUserId(actor);
+        timedOut.setStatus(PaymentStatus.EXPIRED);
+        timedOut.setRejectReason(null);
+        timedOut.setPaymentType(PaymentType.BOOKING);
+        timedOut.setBookingId(UUID.randomUUID());
+        timedOut.setAmount(new BigDecimal("100000"));
+        timedOut.setBankAccount(new BankAccount());
+
+        when(paymentRepository.findById(id)).thenReturn(Optional.of(timedOut));
+        when(cloudinaryService.uploadProof(any())).thenReturn("http://img/proof.jpg");
+        when(paymentRepository.findByIdForUpdate(id)).thenReturn(Optional.of(timedOut));
+
+        service.submitProof(id, null, actor, List.of());
+
+        verify(paymentProofRepository).save(any());                         // evidence kept, not discarded
+        assertThat(timedOut.getStatus()).isEqualTo(PaymentStatus.EXPIRED);  // not resurrected to PROOF_SUBMITTED
+        assertThat(timedOut.isRefundRequired()).isTrue();
+        assertThat(timedOut.getRefundRequiredReason()).isEqualTo("PAYMENT_EXPIRED_PAID_LATE");
+        verify(bookingServiceClient, never()).beginPayment(any());          // never revives the dead booking
+        verify(outboxWriter, never()).writeProofSubmitted(any());           // no proof.submitted on the salvage path
+    }
+
+    @Test
+    void refund_expiredFlaggedForRefund_marksRefunded() {
+        Payment p = confirmedPayment(new BigDecimal("100000"));
+        p.setStatus(PaymentStatus.EXPIRED);
+        p.setRefundRequired(true); // flagged late-paid / cancelled — money arrived but was never confirmed
+        when(paymentRepository.findByIdForUpdate(p.getId())).thenReturn(Optional.of(p));
+
+        service.refund(p.getId(), refundReq(new BigDecimal("100000")), UUID.randomUUID());
+
+        verify(manualRefundRepository).save(any());
+        verify(outboxWriter).writeRefundProcessed(p);
+        assertThat(p.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        assertThat(p.isRefundRequired()).isFalse();
+    }
+
+    @Test
+    void refund_expiredNotFlagged_throwsInvalidState() {
+        Payment p = confirmedPayment(new BigDecimal("100000"));
+        p.setStatus(PaymentStatus.EXPIRED);
+        p.setRefundRequired(false); // a plain timed-out payment with no proof — nothing to refund
+        when(paymentRepository.findByIdForUpdate(p.getId())).thenReturn(Optional.of(p));
+
+        assertThatThrownBy(() -> service.refund(p.getId(), refundReq(new BigDecimal("50000")), UUID.randomUUID()))
+                .isInstanceOf(ConflictException.class)
+                .satisfies(e -> assertThat(((ConflictException) e).getCode()).isEqualTo("INVALID_STATE"));
+        verify(manualRefundRepository, never()).save(any());
+    }
+
+    @Test
+    void reject_blankReason_stampsDefaultReasonSoItCountsAsStaffReject() {
+        Payment p = new Payment();
+        p.setId(UUID.randomUUID());
+        p.setUserId(UUID.randomUUID());
+        p.setStatus(PaymentStatus.PROOF_SUBMITTED);
+        p.setBankAccount(new BankAccount());
+        when(paymentRepository.findByIdForUpdate(p.getId())).thenReturn(Optional.of(p));
+        when(paymentProofRepository.findByPayment_IdOrderByUploadedAtDesc(p.getId())).thenReturn(List.of());
+
+        service.reject(p.getId(), "   ", UUID.randomUUID());
+
+        assertThat(p.getStatus()).isEqualTo(PaymentStatus.EXPIRED);
+        // Non-null reason → a later proof for this payment is refused (genuine reject), not salvaged as a timeout.
+        assertThat(p.getRejectReason()).isEqualTo("REJECTED_BY_STAFF");
+        verify(outboxWriter).writeExpired(p);
     }
 }

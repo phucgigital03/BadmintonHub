@@ -46,8 +46,9 @@ jwt:
 app:
   payment:
     # Countdown / hold window for an unpaid payment. Kept equal to booking-service hold-minutes
-    # so the booking hold and its payment expire together.
-    expire-minutes: ${PAYMENT_EXPIRE_MINUTES:10}
+    # so the booking hold and its payment expire together (15 min — a slow bank transfer + a
+    # non-technical payer routinely exceed 10; a still-late proof is salvaged, see submitProof).
+    expire-minutes: ${PAYMENT_EXPIRE_MINUTES:15}
 
 eureka:
   client:

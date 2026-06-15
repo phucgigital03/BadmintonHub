@@ -31,6 +31,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
@@ -65,8 +66,14 @@ public class PaymentServiceImpl implements PaymentService {
     private static final List<PaymentStatus> ACTIVE_STATUSES =
             List.of(PaymentStatus.PENDING, PaymentStatus.PROOF_SUBMITTED, PaymentStatus.CONFIRMED);
 
+    /** Reason stamped on a payment that TIMED OUT but received a (late) proof — surfaced in the refund queue. */
+    private static final String REFUND_REASON_EXPIRED_PAID_LATE = "PAYMENT_EXPIRED_PAID_LATE";
+    /** Stored as {@code rejectReason} when STAFF rejects with no note, so a reject is always distinguishable
+     *  from a countdown timeout (the discriminator {@link #isTimedOut} relies on). */
+    private static final String STAFF_REJECT_DEFAULT_REASON = "REJECTED_BY_STAFF";
+
     /** Countdown / hold window. Non-final so it stays out of the Lombok constructor. */
-    @Value("${app.payment.expire-minutes:10}")
+    @Value("${app.payment.expire-minutes:15}")
     private long expireMinutes;
 
     @Override
@@ -176,21 +183,22 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public PaymentResponse submitProof(UUID id, MultipartFile file, UUID actorId, Collection<String> actorRoles) {
-        // Pre-check (no lock): 404 + ownership + fast-fail on an obviously closed payment before uploading.
+        // Pre-check (no lock): 404 + ownership + fast-fail on a payment that can't take a proof, before uploading.
         Payment pre = findOr404(id);
         requireOwnerOrPrivileged(pre, actorId, actorRoles);
-        assertOpenForProof(pre);
+        assertProofAcceptable(pre);
 
         // Money-safe: the user may have ALREADY transferred before uploading, so we NEVER discard a proof —
         // upload first. Do it OUTSIDE the row lock: never hold a DB row lock across a Cloudinary network call.
         String url = cloudinaryService.uploadProof(file);
 
-        // Re-load row-locked and RE-CHECK status: a concurrent STAFF reject/confirm may have moved the
-        // payment between the pre-check and now. Fail closed with 409 rather than overwrite — this is what
-        // stops a rejected (EXPIRED) or CONFIRMED payment from being resurrected back to PROOF_SUBMITTED.
+        // Re-load row-locked and RE-CHECK: a concurrent STAFF reject/confirm (or the expiry scheduler) may have
+        // moved the payment between the pre-check and now. Fail closed with 409 only for a payment that truly
+        // can't take a proof — a STAFF-rejected (EXPIRED + rejectReason) or already CONFIRMED/REFUNDED one.
         Payment p = findForUpdateOr404(id);
-        assertOpenForProof(p);
+        assertProofAcceptable(p);
 
+        // Persist the proof regardless of which acceptable state we're in — the evidence is never thrown away.
         PaymentProof proof = new PaymentProof();
         proof.setPayment(p);
         proof.setImageUrl(url);
@@ -198,6 +206,20 @@ public class PaymentServiceImpl implements PaymentService {
         proof.setUploadedAt(LocalDateTime.now());
         paymentProofRepository.save(proof);
 
+        // Salvage path: the proof arrived for a payment that had already TIMED OUT (its booking hold expired
+        // with it and the slots were released). We must NOT revive the booking or confirm a dead order — but
+        // the money may well have moved, so flag it for a manual refund. It then surfaces in the STAFF
+        // refund-required queue instead of vanishing. (A STAFF-rejected EXPIRED was filtered out above.)
+        if (isTimedOut(p)) {
+            p.setRefundRequired(true);
+            p.setRefundRequiredReason(REFUND_REASON_EXPIRED_PAID_LATE);
+            paymentRepository.save(p);
+            log.warn("Proof for already-EXPIRED (timed-out) payment {} (#{}) → kept + flagged refundRequired "
+                    + "(payer likely transferred just after the deadline)", p.getId(), p.getOrderCode());
+            return toResponse(p);
+        }
+
+        // Open payment (PENDING / PROOF_SUBMITTED) → normal proof submission.
         p.setStatus(PaymentStatus.PROOF_SUBMITTED);
 
         boolean flaggedForRefund = false;
@@ -263,10 +285,13 @@ public class PaymentServiceImpl implements PaymentService {
             throw new ConflictException("INVALID_STATE",
                     "Không thể từ chối thanh toán ở trạng thái " + p.getStatus());
         }
+        // Always store a non-null reason: rejectReason is also the discriminator that marks this EXPIRED as a
+        // STAFF reject (not a countdown timeout), so a later proof upload is refused instead of salvaged.
+        String effectiveReason = StringUtils.hasText(reason) ? reason : STAFF_REJECT_DEFAULT_REASON;
         p.setStatus(PaymentStatus.EXPIRED);
-        p.setRejectReason(reason);
+        p.setRejectReason(effectiveReason);
         p.setRefundRequired(false); // rejecting means no money to return (bogus proof / nothing arrived)
-        markLatestProofReviewed(p, staffId, reason);
+        markLatestProofReviewed(p, staffId, effectiveReason);
         paymentRepository.save(p);
         outboxWriter.writeExpired(p);
 
@@ -278,13 +303,15 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public PaymentResponse refund(UUID id, RefundRequest req, UUID staffId) {
         Payment p = findForUpdateOr404(id);
-        // Refundable when CONFIRMED, or when flagged for refund while still PROOF_SUBMITTED (user transferred
-        // for a booking that had already been cancelled — money arrived but we never confirmed a dead order).
+        // Refundable when CONFIRMED, or when flagged for refund while PROOF_SUBMITTED / EXPIRED — the user
+        // transferred for an order that was cancelled (PROOF_SUBMITTED + refundRequired) or whose payment had
+        // timed out before they uploaded (EXPIRED + refundRequired). The money arrived but we never confirmed it.
         boolean refundable = p.getStatus() == PaymentStatus.CONFIRMED
-                || (p.getStatus() == PaymentStatus.PROOF_SUBMITTED && p.isRefundRequired());
+                || ((p.getStatus() == PaymentStatus.PROOF_SUBMITTED || p.getStatus() == PaymentStatus.EXPIRED)
+                    && p.isRefundRequired());
         if (!refundable) {
             throw new ConflictException("INVALID_STATE",
-                    "Chỉ hoàn tiền cho thanh toán đã xác nhận hoặc đơn đã huỷ cần hoàn (hiện: " + p.getStatus() + ")");
+                    "Chỉ hoàn tiền cho thanh toán đã xác nhận hoặc đơn cần hoàn (hiện: " + p.getStatus() + ")");
         }
 
         // Money-safe cap: never refund more than was actually paid (fat-finger / abuse guard). The DTO
@@ -355,12 +382,26 @@ public class PaymentServiceImpl implements PaymentService {
                 .orElseThrow(() -> new ResourceNotFoundException("PAYMENT_NOT_FOUND", "Không tìm thấy thanh toán"));
     }
 
-    /** A proof can only be attached while the payment is still open (PENDING or already PROOF_SUBMITTED). */
-    private void assertOpenForProof(Payment p) {
-        if (p.getStatus() != PaymentStatus.PENDING && p.getStatus() != PaymentStatus.PROOF_SUBMITTED) {
+    /**
+     * A proof can be attached while the payment is still open (PENDING / PROOF_SUBMITTED), OR — money-safe —
+     * when it merely TIMED OUT ({@link #isTimedOut}): the payer may have transferred just before the deadline.
+     * A STAFF-rejected payment (EXPIRED with a rejectReason) stays closed, as do CONFIRMED / REFUNDED.
+     */
+    private void assertProofAcceptable(Payment p) {
+        boolean open = p.getStatus() == PaymentStatus.PENDING || p.getStatus() == PaymentStatus.PROOF_SUBMITTED;
+        if (!open && !isTimedOut(p)) {
             throw new ConflictException("INVALID_STATE",
                     "Thanh toán ở trạng thái " + p.getStatus() + " không thể nộp chứng từ");
         }
+    }
+
+    /**
+     * EXPIRED purely because the countdown elapsed (the {@code PaymentExpiryScheduler}), NOT because STAFF
+     * rejected the proof. {@code reject()} always stamps a non-null {@code rejectReason}, so its absence on an
+     * EXPIRED payment means a timeout — a late proof for it is salvageable (kept + flagged for manual refund).
+     */
+    private boolean isTimedOut(Payment p) {
+        return p.getStatus() == PaymentStatus.EXPIRED && p.getRejectReason() == null;
     }
 
     /** Sets review fields on the most recent proof, if any (reject from PENDING may have none). */

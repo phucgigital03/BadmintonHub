@@ -46,7 +46,8 @@ jwt:
 app:
   booking:
     # PENDING hold window (= payment window). Slots auto-release after this if unpaid.
-    hold-minutes: ${BOOKING_HOLD_MINUTES:10}
+    # Must equal payment-service expire-minutes so the hold and its payment time out together.
+    hold-minutes: ${BOOKING_HOLD_MINUTES:15}
 
 eureka:
   client:
