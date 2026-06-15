@@ -142,9 +142,10 @@ public class PaymentServiceImpl implements PaymentService {
     /**
      * Begin-payment handshake with booking-service (token forwarded): asserts the order is still PENDING +
      * owned by the caller and re-anchors its hold, returning the authoritative order (its {@code totalPrice}
-     * is the amount to charge). Fails closed: a 4xx means the order can't be paid; any other error means we
-     * couldn't verify it. Used both by {@code initiate} (to charge the right amount) and {@code submitProof}
-     * (to refuse a screenshot for a booking that has since been cancelled/expired).
+     * is the amount to charge). Throws {@code BOOKING_NOT_PAYABLE} (4xx) when the order can't be paid, or
+     * {@code BOOKING_SERVICE_UNAVAILABLE} when it couldn't be verified. {@code initiate} lets both propagate
+     * (fail closed — no payment for a dead order); {@code submitProof} catches them to keep the user's proof
+     * and decide whether to pause the hold or flag a refund (it never discards a paid user's evidence).
      */
     private BookingView beginBookingPayment(UUID bookingId) {
         try {
@@ -177,14 +178,8 @@ public class PaymentServiceImpl implements PaymentService {
                     "Thanh toán ở trạng thái " + p.getStatus() + " không thể nộp chứng từ");
         }
 
-        // The payment may still be PENDING while its booking was already cancelled (hold timed out before the
-        // payment did, or the user cancelled) — booking-service is the gatekeeper, so re-validate before
-        // accepting a screenshot. A dead booking → BOOKING_NOT_PAYABLE, no upload. begin-payment also
-        // re-anchors the hold (+10') so the async payment.proof.submitted has time to pause it (no race).
-        if (p.getPaymentType() == PaymentType.BOOKING && p.getBookingId() != null) {
-            beginBookingPayment(p.getBookingId());
-        }
-
+        // Money-safe: the user may have ALREADY transferred before uploading, so we NEVER discard a proof —
+        // always store it first, then reconcile with booking-service.
         String url = cloudinaryService.uploadProof(file);
 
         PaymentProof proof = new PaymentProof();
@@ -195,10 +190,39 @@ public class PaymentServiceImpl implements PaymentService {
         paymentProofRepository.save(proof);
 
         p.setStatus(PaymentStatus.PROOF_SUBMITTED);
-        paymentRepository.save(p);
-        outboxWriter.writeProofSubmitted(p);
 
-        log.info("Payment {} proof submitted by {} → PROOF_SUBMITTED", id, actorId);
+        boolean flaggedForRefund = false;
+        if (p.getPaymentType() == PaymentType.BOOKING && p.getBookingId() != null) {
+            try {
+                // booking still PENDING → re-anchor its hold + tell it to pause auto-cancel.
+                beginBookingPayment(p.getBookingId());
+                outboxWriter.writeProofSubmitted(p);
+            } catch (ConflictException e) {
+                if ("BOOKING_NOT_PAYABLE".equals(e.getCode())) {
+                    // Booking already cancelled but the money may have moved — keep the proof and flag it for a
+                    // manual refund (STAFF checks the bank: refund if it arrived, reject if the proof is bogus).
+                    // We do NOT confirm a dead booking and we do NOT throw away the user's evidence.
+                    p.setRefundRequired(true);
+                    p.setRefundRequiredReason("BOOKING_CANCELLED");
+                    flaggedForRefund = true;
+                    log.warn("Proof for already-cancelled booking {} (payment {}) → kept + flagged refundRequired",
+                            p.getBookingId(), p.getId());
+                } else {
+                    // Couldn't verify booking (service down) — keep the proof and still notify booking (it pauses
+                    // only if alive; the confirm-time orphan guard backstops a dead one).
+                    outboxWriter.writeProofSubmitted(p);
+                    log.warn("Booking {} unverifiable on proof (payment {}): {} — proof kept",
+                            p.getBookingId(), p.getId(), e.getMessage());
+                }
+            }
+        } else {
+            outboxWriter.writeProofSubmitted(p); // match/event payment — normal
+        }
+
+        paymentRepository.save(p);
+
+        log.info("Payment {} proof submitted by {} → PROOF_SUBMITTED{}",
+                id, actorId, flaggedForRefund ? " (refund-required: booking cancelled)" : "");
         return toResponse(p);
     }
 
@@ -232,6 +256,7 @@ public class PaymentServiceImpl implements PaymentService {
         }
         p.setStatus(PaymentStatus.EXPIRED);
         p.setRejectReason(reason);
+        p.setRefundRequired(false); // rejecting means no money to return (bogus proof / nothing arrived)
         markLatestProofReviewed(p, staffId, reason);
         paymentRepository.save(p);
         outboxWriter.writeExpired(p);
@@ -244,9 +269,13 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public PaymentResponse refund(UUID id, RefundRequest req, UUID staffId) {
         Payment p = findOr404(id);
-        if (p.getStatus() != PaymentStatus.CONFIRMED) {
+        // Refundable when CONFIRMED, or when flagged for refund while still PROOF_SUBMITTED (user transferred
+        // for a booking that had already been cancelled — money arrived but we never confirmed a dead order).
+        boolean refundable = p.getStatus() == PaymentStatus.CONFIRMED
+                || (p.getStatus() == PaymentStatus.PROOF_SUBMITTED && p.isRefundRequired());
+        if (!refundable) {
             throw new ConflictException("INVALID_STATE",
-                    "Chỉ hoàn tiền cho thanh toán đã xác nhận (hiện: " + p.getStatus() + ")");
+                    "Chỉ hoàn tiền cho thanh toán đã xác nhận hoặc đơn đã huỷ cần hoàn (hiện: " + p.getStatus() + ")");
         }
 
         ManualRefund refund = new ManualRefund();
