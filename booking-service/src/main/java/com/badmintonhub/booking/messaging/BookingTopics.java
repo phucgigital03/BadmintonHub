@@ -3,11 +3,13 @@ package com.badmintonhub.booking.messaging;
 /** Kafka topic names produced by booking-service (consumed by court-service / payment-service). */
 public final class BookingTopics {
 
-    /** A PENDING booking now holds these slots → court-service flips them AVAILABLE→RESERVED. */
-    public static final String SLOT_HELD = "booking.slot.held";
-
-    /** A booking was cancelled/expired → court-service flips its slots RESERVED→AVAILABLE. */
-    public static final String SLOT_RELEASED = "booking.slot.released";
+    /**
+     * A slot's hold state changed (one message PER slot, keyed by slotId) → court-service flips it
+     * AVAILABLE↔RESERVED per the {@code action} (HELD / RELEASED). Keying by slotId puts every change to
+     * the same slot on one partition, so held and released for that slot are consumed in order (released
+     * never overtakes held) — which is what stops a slot from getting stuck RESERVED on a cancelled booking.
+     */
+    public static final String SLOT_CHANGED = "booking.slot.changed";
 
     /**
      * A payment was CONFIRMED for a booking that is already CANCELLED (money taken for a dead order) →

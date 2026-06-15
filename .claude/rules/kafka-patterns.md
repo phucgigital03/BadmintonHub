@@ -22,8 +22,7 @@ alwaysApply: false
 | `match.completed` | matchmaking-service | escrow-service, notification-service |
 | `match.compensate.slot` | matchmaking-service | booking-service, escrow-service |
 | `booking.slot.confirmed` | booking-service | matchmaking-service, notification-service, escrow-service |
-| `booking.slot.held` | booking-service (Outbox) | court-service |
-| `booking.slot.released` | booking-service (Outbox) | court-service |
+| `booking.slot.changed` | booking-service (Outbox) | court-service |
 | `booking.payment.orphaned` | booking-service (Outbox) | payment-service |
 | `booking.refund.required` | booking-service (Outbox) | payment-service |
 | `escrow.host.reimbursed` | escrow-service | notification-service |
@@ -34,9 +33,13 @@ DLT suffix: `{topic}.DLT` (e.g. `payment.host.confirmed.DLT`)
 
 Save `OutboxEvent` in the **same `@Transactional`** as the business record. A `@Scheduled` job (every 3s) polls `outbox_events WHERE status='PENDING'` and publishes to Kafka.
 
-> **booking-service** uses the Outbox for the slot-hold Saga: `create` / `cancel` / hold-expiry write a
-> `booking.slot.held` / `booking.slot.released` row in the same transaction as the booking change, so
-> court-service is reliably told to flip the slot RESERVED↔AVAILABLE (the grid reflects the hold).
+> **booking-service** uses the Outbox for the slot-hold Saga: `create` / `cancel` / hold-expiry write
+> `booking.slot.changed` rows in the same transaction as the booking change, so court-service is reliably
+> told to flip the slot RESERVED↔AVAILABLE (the grid reflects the hold). **One message PER slot, Kafka
+> key = `slotId`** → every change to a slot is totally ordered on one partition, so a `RELEASED` can never
+> overtake the `HELD` for that slot (which would otherwise leave the slot stuck RESERVED on a cancelled
+> booking). The `action` (HELD/RELEASED) is in the payload; idempotency uses the payload `eventId` (NOT the
+> Kafka key — the key is the slotId).
 >
 > **payment-service** writes every `payment.*` event (proof.submitted / host|player.confirmed /
 > host|player.expired / refund.processed) to the Outbox in the same transaction as the `payments.status`
@@ -82,8 +85,10 @@ Outbox cleanup: delete SENT events older than 30 days (`@Scheduled(cron = "0 0 2
 
 Always check `processed_events` before processing. (payment-service also consumes the
 `booking.payment.orphaned` + `booking.refund.required` compensations — so it owns a `processed_events`
-table too.) Use the Kafka record key or a UUID from the event payload as `event_id`. A **null** key means
-a misconfigured producer (the Outbox always sets `msgKey` = event UUID) — log a warning, don't dedupe silently.
+table too.) Use a UUID from the event as `event_id`. Most consumers read it from the Kafka record key
+(`msgKey` = event UUID); **`booking.slot.changed` is the exception** — its key is the `slotId` (for
+ordering), so court-service dedupes on the payload's `eventId` field instead. Either way, a missing id
+means a malformed event — log a warning, don't dedupe silently.
 
 ```java
 @KafkaListener(topics = "payment.player.confirmed", groupId = "booking-service")

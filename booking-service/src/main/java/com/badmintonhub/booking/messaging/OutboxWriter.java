@@ -4,8 +4,8 @@ import com.badmintonhub.booking.entity.OutboxEvent;
 import com.badmintonhub.booking.entity.enums.OutboxStatus;
 import com.badmintonhub.booking.messaging.event.PaymentOrphanedEvent;
 import com.badmintonhub.booking.messaging.event.RefundRequiredEvent;
-import com.badmintonhub.booking.messaging.event.SlotHeldEvent;
-import com.badmintonhub.booking.messaging.event.SlotReleasedEvent;
+import com.badmintonhub.booking.messaging.event.SlotAction;
+import com.badmintonhub.booking.messaging.event.SlotChangedEvent;
 import com.badmintonhub.booking.repository.OutboxEventRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -28,14 +28,21 @@ public class OutboxWriter {
     private final OutboxEventRepository outboxRepository;
     private final ObjectMapper objectMapper;
 
+    /** One {@code booking.slot.changed} message PER slot (key = slotId) so each slot's events stay ordered. */
     public void writeSlotHeld(UUID bookingId, List<UUID> slotIds, LocalDateTime holdExpiresAt) {
-        String eventId = UUID.randomUUID().toString();
-        persist(BookingTopics.SLOT_HELD, eventId, new SlotHeldEvent(eventId, bookingId, slotIds, holdExpiresAt));
+        for (UUID slotId : slotIds) {
+            String eventId = UUID.randomUUID().toString();
+            persist(BookingTopics.SLOT_CHANGED, slotId.toString(),
+                    new SlotChangedEvent(eventId, SlotAction.HELD, bookingId, slotId, holdExpiresAt));
+        }
     }
 
     public void writeSlotReleased(UUID bookingId, List<UUID> slotIds) {
-        String eventId = UUID.randomUUID().toString();
-        persist(BookingTopics.SLOT_RELEASED, eventId, new SlotReleasedEvent(eventId, bookingId, slotIds));
+        for (UUID slotId : slotIds) {
+            String eventId = UUID.randomUUID().toString();
+            persist(BookingTopics.SLOT_CHANGED, slotId.toString(),
+                    new SlotChangedEvent(eventId, SlotAction.RELEASED, bookingId, slotId, null));
+        }
     }
 
     public void writePaymentOrphaned(UUID paymentId, UUID bookingId) {
@@ -51,10 +58,15 @@ public class OutboxWriter {
                 new RefundRequiredEvent(eventId, bookingId, refundAmount, reason));
     }
 
-    private void persist(String topic, String eventId, Object payload) {
+    /**
+     * {@code msgKey} becomes the Kafka partition key: the event UUID for orphaned/refund-required (each
+     * its own partition is fine), or the slotId for slot.changed (so a slot's events stay ordered). The
+     * idempotency id always travels inside {@code payload.eventId}.
+     */
+    private void persist(String topic, String msgKey, Object payload) {
         OutboxEvent event = new OutboxEvent();
         event.setTopic(topic);
-        event.setMsgKey(eventId);
+        event.setMsgKey(msgKey);
         try {
             event.setPayload(objectMapper.writeValueAsString(payload));
         } catch (JsonProcessingException e) {

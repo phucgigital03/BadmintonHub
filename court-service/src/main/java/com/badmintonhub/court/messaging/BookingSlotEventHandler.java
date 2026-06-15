@@ -1,8 +1,7 @@
 package com.badmintonhub.court.messaging;
 
 import com.badmintonhub.court.entity.ProcessedEvent;
-import com.badmintonhub.court.messaging.event.SlotHeldEvent;
-import com.badmintonhub.court.messaging.event.SlotReleasedEvent;
+import com.badmintonhub.court.messaging.event.SlotChangedEvent;
 import com.badmintonhub.court.repository.ProcessedEventRepository;
 import com.badmintonhub.court.service.SlotService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -10,6 +9,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 /**
  * Transactional handling of booking-slot events: the slot mutation + the idempotency-guard row commit
@@ -26,31 +27,29 @@ public class BookingSlotEventHandler {
     private final SlotService slotService;
     private final ProcessedEventRepository processedEventRepository;
 
+    /**
+     * One slot's hold change. Idempotency keys on the payload's {@code eventId} (the Kafka message key is
+     * the slotId, for ordering — not unique per event). Routes by action; reuses the existing batch slot
+     * methods with a single-element list.
+     */
     @Transactional
-    public void handleHeld(String eventId, String payload) {
-        if (alreadyProcessed(eventId)) {
+    public void handle(String payload) {
+        SlotChangedEvent event = parse(payload, SlotChangedEvent.class);
+        if (alreadyProcessed(event.eventId())) {
             return;
         }
-        SlotHeldEvent event = parse(payload, SlotHeldEvent.class);
-        slotService.holdSlots(event.bookingId(), event.slotIds());
-        recordProcessed(eventId);
-    }
-
-    @Transactional
-    public void handleReleased(String eventId, String payload) {
-        if (alreadyProcessed(eventId)) {
-            return;
+        switch (event.action()) {
+            case HELD -> slotService.holdSlots(event.bookingId(), List.of(event.slotId()));
+            case RELEASED -> slotService.releaseSlots(event.bookingId(), List.of(event.slotId()));
         }
-        SlotReleasedEvent event = parse(payload, SlotReleasedEvent.class);
-        slotService.releaseSlots(event.bookingId(), event.slotIds());
-        recordProcessed(eventId);
+        recordProcessed(event.eventId());
     }
 
     private boolean alreadyProcessed(String eventId) {
         if (eventId == null) {
-            // Outbox always sets msgKey = event UUID, so a null key means a misconfigured producer —
-            // idempotency can't dedupe this message. Warn loudly rather than silently risk reprocessing.
-            log.warn("Kafka event arrived with a NULL key — idempotency guard disabled for this message");
+            // The Outbox always sets a payload eventId, so null means a malformed event — warn rather than
+            // silently risk reprocessing.
+            log.warn("booking.slot.changed event arrived with a NULL eventId — idempotency guard disabled");
             return false;
         }
         if (processedEventRepository.existsById(eventId)) {

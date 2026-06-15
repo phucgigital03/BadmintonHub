@@ -25,8 +25,8 @@
 ### 2.1 Luồng chính (happy path → đơn `CONFIRMED`)
 
 1. **Xem lưới** — User mở trang CLB. FE gọi `GET /api/clubs/{clubId}/slots?date=&sport=` → lưới **hàng = Sân, cột = ô 30'** (05:00–22:00), mỗi ô kèm `status` + `price` (= `price_per_hour ÷ 2`). User chọn vài ô trống; bottom bar cộng **Tổng giờ / Tổng tiền** trực tiếp.
-2. **Đặt** — Bấm **XÁC NHẬN ĐẶT** → `POST /api/bookings {clubId, date, customerName, customerPhone, note, items:[{courtId,slotId}]}`. booking-service trong **1 `@Transactional`**: khoá Redis tất cả ô (TTL 5s, all-or-nothing) → Feign verify ô còn `AVAILABLE` + chốt giá/tên sân/giờ (**snapshot**) → INSERT `bookings(PENDING)` + N `booking_items` (`UNIQUE slot_id`) → đặt `hold_expires_at = now+10'` → ghi `outbox(booking.slot.held)`. Trả `201 {bookingId, totalPrice, holdExpiresAt}`.
-3. **Lưới đỏ** — Outbox (3s) phát `booking.slot.held` → court-service flip ô `AVAILABLE→RESERVED` (idempotent). Người khác thấy ô đỏ ở lần fetch kế tiếp.
+2. **Đặt** — Bấm **XÁC NHẬN ĐẶT** → `POST /api/bookings {clubId, date, customerName, customerPhone, note, items:[{courtId,slotId}]}`. booking-service trong **1 `@Transactional`**: khoá Redis tất cả ô (TTL 5s, all-or-nothing) → Feign verify ô còn `AVAILABLE` + chốt giá/tên sân/giờ (**snapshot**) → INSERT `bookings(PENDING)` + N `booking_items` (`UNIQUE slot_id`) → đặt `hold_expires_at = now+10'` → ghi `outbox(booking.slot.changed·HELD)` (1 message/ô, key=slotId). Trả `201 {bookingId, totalPrice, holdExpiresAt}`.
+3. **Lưới đỏ** — Outbox (3s) phát `booking.slot.changed (HELD)` → court-service flip ô `AVAILABLE→RESERVED` (idempotent). Người khác thấy ô đỏ ở lần fetch kế tiếp.
 4. **Mở Bank QR** — FE gọi `POST /api/payments/initiate {bookingId, BOOKING, amount}`. payment-service handshake `POST /api/bookings/{id}/begin-payment` (Feign, forward token): booking gác cổng — đúng chủ + còn `PENDING` → gia hạn `hold=+10'` + trả `totalPrice` làm **amount chuẩn** → tạo `payment(PENDING)` + `order_code (#184)` + `expires_at=now+10'`. Trả **bank info + QR + countdown**.
 5. **Chuyển khoản + nộp proof** — User chuyển khoản (nội dung `#184`) rồi `POST /api/payments/{id}/proof` (ảnh). payment-service **LUÔN lưu proof** (Cloudinary + `payment_proofs`) → `PROOF_SUBMITTED`; booking nghe `payment.proof.submitted` → `hold_expires_at=null` (dừng đồng hồ tự huỷ). FE hiện "chờ STAFF duyệt".
 6. **STAFF duyệt** — STAFF mở `GET /api/payments/pending-review` (hàng chờ FIFO) → `POST /api/payments/{id}/confirm` → `payment CONFIRMED` + phát `payment.player.confirmed` → booking `PENDING→CONFIRMED` (ô giữ `RESERVED`). ✅ **Đặt sân thành công.**
@@ -95,16 +95,16 @@ sequenceDiagram
     FE->>GW: POST /api/bookings {items:[{courtId,slotId}...]}
     GW->>BS: route (verify JWT + EMAIL_VERIFIED)
     BS->>CS: Feign GET lưới (verify AVAILABLE + chốt giá snapshot)
-    BS->>BS: INSERT bookings + items + outbox(held) · booking PENDING (hold=+10')
+    BS->>BS: INSERT bookings + items + outbox(slot.changed·HELD mỗi ô) · booking PENDING (hold=+10')
     BS-->>FE: 201 {bookingId, totalPrice, holdExpiresAt}
-    BS->>K: (Outbox 3s) booking.slot.held
+    BS->>K: (Outbox 3s) booking.slot.changed (HELD·key=slotId)
     K->>CS: consume → ô AVAILABLE→RESERVED (lưới đỏ)
     Note over BS,PS: booking=PENDING · payment=(chưa tạo)
 
     alt User KHÔNG initiate — bỏ ngay sau khi giữ ô (NHÁNH 1)
         Note over BS: HoldExpiryScheduler (60s): booking PENDING quá hold_expires_at (10')
-        BS->>BS: booking PENDING→CANCELLED (PAYMENT_TIMEOUT) + xoá items + outbox(released)
-        BS->>K: booking.slot.released
+        BS->>BS: booking PENDING→CANCELLED (PAYMENT_TIMEOUT) + xoá items + outbox(slot.changed·RELEASED)
+        BS->>K: booking.slot.changed (RELEASED·key=slotId)
         K->>CS: ô RESERVED→AVAILABLE (lưới xanh)
         Note over BS,PS: ❌ booking=CANCELLED · payment=(chưa tạo)
     else User initiate — mở màn Bank QR
@@ -134,8 +134,8 @@ sequenceDiagram
 
                 opt User đổi ý → huỷ đơn KHI ĐANG CHỜ DUYỆT (booking PENDING) — tạo tiền đề NHÁNH 5
                     U->>BS: POST /api/bookings/{id}/cancel
-                    BS->>BS: booking PENDING→CANCELLED (refund=0 · chưa confirm) + outbox(released)
-                    BS->>K: booking.slot.released
+                    BS->>BS: booking PENDING→CANCELLED (refund=0 · chưa confirm) + outbox(slot.changed·RELEASED)
+                    BS->>K: booking.slot.changed (RELEASED·key=slotId)
                     K->>CS: ô RESERVED→AVAILABLE
                     Note over BS,PS: booking=CANCELLED · payment=PROOF_SUBMITTED (tiền chờ STAFF đối soát)
                 end
@@ -155,8 +155,8 @@ sequenceDiagram
                         Note over BS,PS: ✅ booking=CONFIRMED · payment=CONFIRMED
                         opt Sau này huỷ đơn ĐÃ TRẢ → vào hàng refund-required (NHÁNH 3)
                             U->>BS: POST /api/bookings/{id}/cancel (hoặc STAFF · row-locked)
-                            BS->>BS: booking CONFIRMED→CANCELLED · refund=%tier×total + outbox(released)
-                            BS->>K: booking.slot.released
+                            BS->>BS: booking CONFIRMED→CANCELLED · refund=%tier×total + outbox(slot.changed·RELEASED)
+                            BS->>K: booking.slot.changed (RELEASED·key=slotId)
                             K->>CS: ô RESERVED→AVAILABLE
                             BS->>K: (Outbox) booking.refund.required {refundAmount=%tier×total} (chỉ khi refund>0)
                             K->>PS: consume (idempotent) · payment CONFIRMED + refundRequired=true + refund_required_amount
@@ -180,8 +180,8 @@ sequenceDiagram
                     GW->>PS: route (STAFF/ADMIN)
                     PS->>PS: set reject_reason · payment PROOF_SUBMITTED→EXPIRED (xoá cờ refundRequired)
                     PS->>K: (Outbox) payment.player.expired
-                    K->>BS: consume · booking PENDING→CANCELLED + outbox(released) · đã CANCELLED → no-op
-                    BS->>K: booking.slot.released
+                    K->>BS: consume · booking PENDING→CANCELLED + outbox(slot.changed·RELEASED) · đã CANCELLED → no-op
+                    BS->>K: booking.slot.changed (RELEASED·key=slotId)
                     K->>CS: ô RESERVED→AVAILABLE (lưới xanh)
                     Note over BS,PS: ❌ booking=CANCELLED · payment=EXPIRED
                 end
@@ -195,9 +195,9 @@ sequenceDiagram
         else User initiate XONG rồi BỎ MẶC — không upload proof, hai đồng hồ 10' tự nổ (NHÁNH 1)
             Note over PS: PaymentExpiryScheduler (60s): payment PENDING quá expires_at → EXPIRED (chỉ PENDING · bỏ qua PROOF_SUBMITTED)
             PS->>K: (Outbox) payment.player.expired
-            K->>BS: consume → booking còn PENDING → CANCELLED + outbox(released) · đã CANCELLED → no-op (idempotent)
+            K->>BS: consume → booking còn PENDING → CANCELLED + outbox(slot.changed·RELEASED) · đã CANCELLED → no-op (idempotent)
             Note over BS: (độc lập) HoldExpiryScheduler cũng huỷ booking nếu chưa bị huỷ — cái nào nổ trước thắng
-            BS->>K: booking.slot.released
+            BS->>K: booking.slot.changed (RELEASED·key=slotId)
             K->>CS: ô RESERVED→AVAILABLE (lưới xanh)
             Note over BS,PS: ❌ booking=CANCELLED · payment=EXPIRED · ô AVAILABLE
         end
@@ -249,9 +249,11 @@ bookings.status (booking_db):
 - **Confirm trúng đơn ĐÃ HUỶ → bù trừ hoàn tiền** (lớp 2): nếu vẫn lọt (user nộp proof hợp lệ **rồi tự huỷ đơn** trước khi STAFF confirm) → `handleConfirmed` thấy booking `CANCELLED` → KHÔNG hồi sinh, phát `booking.payment.orphaned` (Outbox, zombie-event pattern) → payment-service (consumer đầu tiên + `processed_events`) gắn cờ **`refundRequired=true`** trên payment đã `CONFIRMED` (tiền đã vào). STAFF thấy qua `GET /api/payments/refund-required` rồi hoàn tiền tay (`/{id}/refund` → đóng cờ). **Tiền không bị nuốt im lặng nữa.**
 - **Huỷ đơn ĐÃ TRẢ → nối lại đường hoàn (NHÁNH 3)**: `cancel` một đơn `CONFIRMED` (refund tier > 0) phát **`booking.refund.required`** (Outbox, kèm `refundAmount`) → payment-service consume → gắn `refundRequired=true` + lưu `refund_required_amount` (số gợi ý hiện trong hàng `/refund-required`). Trước đây `cancel` tính refund nhưng **không báo payment** → tiền user mất trong im lặng; event này dùng đúng machinery cờ của orphaned. refund=0 (huỷ <2h) thì CLB giữ tiền hợp lệ → KHÔNG phát.
 - **Chống mất tiền do đua (row-lock + cap)**: mọi chuyển trạng thái booking (`cancel`/`beginPayment`/handler `payment.player.*`/hold-expiry) và payment (`confirm`/`reject`/`refund`) đọc record bằng **`SELECT … FOR UPDATE`** → `cancel` ‖ `payment.player.confirmed` không lose-update nhau (luôn hội tụ về NHÁNH 3 hoặc 5, không ra "tiền vào mà không cờ hoàn"); 2 STAFF bấm `refund`/`confirm` đồng thời → kẻ thua block rồi 409. `refund` chặn trần **`amount ≤ payments.amount`** (409 `REFUND_EXCEEDS_PAID`) — không bao giờ hoàn quá số đã trả.
+- **`submitProof` cũng row-lock (chống hồi sinh đơn đã reject)**: upload Cloudinary **TRƯỚC** (ngoài lock, không giữ row-lock qua network) → `SELECT … FOR UPDATE` re-check status. Nếu giữa lúc đó STAFF vừa `reject`/`confirm` (đơn `EXPIRED`/`CONFIRMED`) → **409, KHÔNG ghi đè** (không đẩy đơn đã từ chối trở lại hàng chờ duyệt).
+- **Chống tạo payment thứ 2 (idempotent initiate)**: đã có payment `CONFIRMED` cho booking → `initiate` lần 2 **trả lại chính nó**, không mở payment mới (đóng khe lag "booking còn PENDING nhưng payment đã CONFIRMED" → tránh user chuyển khoản 2 lần). `booking.refund.required` ưu tiên gắn cờ payment `CONFIRMED` (đúng cái đang giữ tiền).
 - **Topic theo `payment_type`**: BOOKING/MATCH_PLAYER → `payment.player.*`; MATCH_HOST → `payment.host.*`. booking **chỉ** nghe `payment.player.confirmed/expired`; nếu payload `bookingId=null` (vd event MATCH_PLAYER) → booking **ack bỏ qua**.
 - **`order_code`** = Postgres `bigserial` (`@Generated` đọc lại sau INSERT), hiển thị `"#"+value` (vd `#184`) — user ghi vào nội dung chuyển khoản.
 - **Cloudinary degrade**: thiếu key → `image_url = local-fallback://proof/{uuid}` (luồng vẫn chạy để test); điền key thật để upload thật.
 - **API payment**: `POST /api/payments/initiate` (USER/COACH + email-verified) · `/{id}/proof` (owner/STAFF, multipart) · `/{id}/confirm` · `/{id}/reject` · `/{id}/refund` · `GET /api/payments/pending-review` (STAFF/ADMIN — hàng chờ duyệt, FIFO) · `GET /api/payments/refund-required` (STAFF/ADMIN) · `GET /{id}` · `GET /` (của mình) · `GET /api/bank-accounts/active`. Refund (`/{id}/refund`) = STAFF chuyển khoản tay → `manual_refunds` → `payment.refund.processed`.
 - **STAFF tìm proof để duyệt** (lấp gap): chưa có notification-service → STAFF chủ động gọi **`GET /api/payments/pending-review`** (liệt kê payment `PROOF_SUBMITTED`, cũ nhất trước) rồi `confirm`/`reject`. Khi notification-service lên, `payment.proof.submitted` (đã phát) sẽ push/email cho STAFF — endpoint vẫn là nguồn tra cứu chính.
-- **Kafka & Routing**: topic `booking.slot.held` / `booking.slot.released` (booking → court) + `payment.player.confirmed/expired` / `payment.proof.submitted` / `payment.refund.processed` (payment → …) + `booking.payment.orphaned` / `booking.refund.required` (booking → payment). Routing: `/api/clubs/**`,`/api/courts/**` → `lb://court-service`; `/api/bookings/**` → `lb://booking-service`; `/api/payments/**`,`/api/bank-accounts/**` → `lb://payment-service`.
+- **Kafka & Routing**: topic `booking.slot.changed` (booking → court · 1 message/ô, key=`slotId` để HELD/RELEASED của 1 ô đúng thứ tự, chống ô kẹt RESERVED · idempotency theo `eventId` trong payload) + `payment.player.confirmed/expired` / `payment.proof.submitted` / `payment.refund.processed` (payment → …) + `booking.payment.orphaned` / `booking.refund.required` (booking → payment). Routing: `/api/clubs/**`,`/api/courts/**` → `lb://court-service`; `/api/bookings/**` → `lb://booking-service`; `/api/payments/**`,`/api/bank-accounts/**` → `lb://payment-service`.
