@@ -36,4 +36,7 @@ public interface PaymentService {
 
     /** Confirmed payments awaiting a manual refund (booking cancelled after confirm). STAFF/ADMIN. */
     Page<PaymentResponse> listRefundRequired(Pageable pageable);
+
+    /** Payments awaiting STAFF review (proof uploaded → PROOF_SUBMITTED), oldest first. STAFF/ADMIN. */
+    Page<PaymentResponse> listPendingReview(Pageable pageable);
 }

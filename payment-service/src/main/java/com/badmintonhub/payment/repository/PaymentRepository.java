@@ -23,6 +23,9 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     /** Confirmed payments flagged for a manual refund (orphaned by a cancelled booking), newest first. */
     Page<Payment> findByRefundRequiredTrueOrderByCreatedAtDesc(Pageable pageable);
 
+    /** Payments awaiting STAFF review by status (e.g. PROOF_SUBMITTED), oldest first (FIFO work queue). */
+    Page<Payment> findByStatusOrderByCreatedAtAsc(PaymentStatus status, Pageable pageable);
+
     /**
      * The current active (PENDING / PROOF_SUBMITTED) payment for a booking, if any. Used by
      * {@code initiate} to stay idempotent — a second initiate for the same booking returns this one

@@ -290,6 +290,13 @@ public class PaymentServiceImpl implements PaymentService {
         return paymentRepository.findByRefundRequiredTrueOrderByCreatedAtDesc(pageable).map(this::toResponse);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Page<PaymentResponse> listPendingReview(Pageable pageable) {
+        return paymentRepository.findByStatusOrderByCreatedAtAsc(PaymentStatus.PROOF_SUBMITTED, pageable)
+                .map(this::toResponse);
+    }
+
     // ---- helpers ----
 
     private Payment findOr404(UUID id) {

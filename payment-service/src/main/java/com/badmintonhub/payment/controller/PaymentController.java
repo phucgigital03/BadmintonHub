@@ -94,6 +94,14 @@ public class PaymentController {
         return ResponseEntity.ok(paymentService.listMine(UUID.fromString(auth.getName()), pageable));
     }
 
+    /** Payments awaiting STAFF review (proof uploaded → PROOF_SUBMITTED), oldest first — the confirm/reject queue. */
+    @GetMapping("/pending-review")
+    @PreAuthorize("hasAnyRole('STAFF','ADMIN')")
+    public ResponseEntity<Page<PaymentResponse>> listPendingReview(
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.ASC) Pageable pageable) {
+        return ResponseEntity.ok(paymentService.listPendingReview(pageable));
+    }
+
     /** Confirmed payments awaiting a manual refund (booking cancelled after the money was confirmed). */
     @GetMapping("/refund-required")
     @PreAuthorize("hasAnyRole('STAFF','ADMIN')")
