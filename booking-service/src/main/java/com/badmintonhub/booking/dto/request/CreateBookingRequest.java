@@ -23,7 +23,7 @@ public record CreateBookingRequest(
         @NotBlank @Size(max = 120) String customerName,
         @NotBlank @Pattern(regexp = "^\\+?[0-9]{8,15}$", message = "Số điện thoại không hợp lệ") String customerPhone,
         @Size(max = 500) String note,
-        @NotEmpty @Valid List<Item> items
+        @NotEmpty @Size(max = 20, message = "Tối đa 20 ô trong một đơn") @Valid List<Item> items
 ) {
     /** One selected cell: the court it belongs to + the 30-min slot id (both court_db UUIDs). */
     public record Item(

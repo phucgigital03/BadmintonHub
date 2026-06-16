@@ -16,6 +16,13 @@ public interface BookingService {
     /** Fetch one order — owner or STAFF/ADMIN only. */
     BookingResponse getById(UUID id, UUID actorId, Collection<String> actorRoles);
 
+    /**
+     * Claim a PENDING order for payment (payment-service handshake): validates it is still payable
+     * (PENDING + owner/STAFF), re-anchors the hold window to {@code now + holdMinutes}, and returns the
+     * authoritative order (its {@code totalPrice} is the amount to charge). 409 if the order is no longer PENDING.
+     */
+    BookingResponse beginPayment(UUID id, UUID actorId, Collection<String> actorRoles);
+
     /** List orders — caller's own, or all when STAFF/ADMIN. */
     Page<BookingResponse> list(UUID actorId, Collection<String> actorRoles, Pageable pageable);
 

@@ -35,12 +35,21 @@ public class HoldExpiryScheduler {
     @Scheduled(fixedDelay = 60_000) // every 60s
     @Transactional
     public void releaseExpiredHolds() {
-        List<Booking> expired = bookingRepository
+        List<Booking> candidates = bookingRepository
                 .findByStatusAndHoldExpiresAtBefore(BookingStatus.PENDING, LocalDateTime.now());
-        if (expired.isEmpty()) {
+        if (candidates.isEmpty()) {
             return;
         }
-        for (Booking booking : expired) {
+        int released = 0;
+        for (Booking candidate : candidates) {
+            // Re-load row-locked + re-check under the lock: a payment.confirmed may have flipped this
+            // booking to CONFIRMED (and cleared the hold) between the query and now — never cancel that.
+            Booking booking = bookingRepository.findByIdForUpdate(candidate.getId()).orElse(null);
+            if (booking == null || booking.getStatus() != BookingStatus.PENDING
+                    || booking.getHoldExpiresAt() == null
+                    || booking.getHoldExpiresAt().isAfter(LocalDateTime.now())) {
+                continue; // confirmed / hold paused or re-anchored — leave it alone
+            }
             List<UUID> slotIds = bookingItemRepository.findByBooking_IdOrderByStartTimeAsc(booking.getId())
                     .stream().map(BookingItem::getSlotId).toList();
 
@@ -52,9 +61,10 @@ public class HoldExpiryScheduler {
 
             bookingItemRepository.deleteByBooking_Id(booking.getId());
             outboxWriter.writeSlotReleased(booking.getId(), slotIds);
+            released++;
             log.info("Booking {} hold expired (deadline {}) → CANCELLED + {} slot(s) released",
                     booking.getId(), booking.getHoldExpiresAt(), slotIds.size());
         }
-        log.info("HoldExpiryScheduler released {} expired hold(s)", expired.size());
+        log.info("HoldExpiryScheduler released {} expired hold(s)", released);
     }
 }

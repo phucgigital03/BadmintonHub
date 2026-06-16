@@ -68,6 +68,17 @@ public class BookingController {
         return ResponseEntity.ok(bookingService.cancel(id, UUID.fromString(auth.getName()), roles(auth), reason));
     }
 
+    /**
+     * Payment handshake (called by payment-service via Feign with the forwarded user token): validates
+     * the order is still payable, re-anchors its hold, and returns it so payment-service can charge the
+     * authoritative {@code totalPrice}. 409 if the order is no longer PENDING.
+     */
+    @PostMapping("/{id}/begin-payment")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<BookingResponse> beginPayment(@PathVariable UUID id, Authentication auth) {
+        return ResponseEntity.ok(bookingService.beginPayment(id, UUID.fromString(auth.getName()), roles(auth)));
+    }
+
     private static Collection<String> roles(Authentication auth) {
         return auth.getAuthorities().stream().map(GrantedAuthority::getAuthority).toList();
     }
