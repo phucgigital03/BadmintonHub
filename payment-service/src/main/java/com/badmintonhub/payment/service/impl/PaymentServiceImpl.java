@@ -73,7 +73,7 @@ public class PaymentServiceImpl implements PaymentService {
     private static final String STAFF_REJECT_DEFAULT_REASON = "REJECTED_BY_STAFF";
 
     /** Countdown / hold window. Non-final so it stays out of the Lombok constructor. */
-    @Value("${app.payment.expire-minutes:15}")
+    @Value("${app.payment.expire-minutes:10}")
     private long expireMinutes;
 
     @Override

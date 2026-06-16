@@ -10,7 +10,7 @@ alwaysApply: false
 
 | Key Pattern | TTL | Purpose | Service |
 |---|---|---|---|
-| `lock:slot:{slotId}` | 5s | Distributed lock — 1 ô 30' khi đặt. Booking nhiều ô → khoá **TẤT CẢ** `slotId` trong 1 `@Transactional` (1 ô fail → rollback cả đơn) | booking-service, court-service |
+| `lock:slot:{slotId}` | 5s | Distributed lock — 1 ô 30' khi đặt. Booking nhiều ô → khoá **TẤT CẢ** `slotId` (all-or-nothing) **sau khi** đã gọi Feign lấy grid, bao quanh giao dịch ghi ngắn (header+items+outbox). KHÔNG giữ lock qua Feign. Fail-open nếu Redis chết (`booking_items.slot_id` UNIQUE là chốt thật) | booking-service, court-service |
 | `lock:slot:{slotId}:match_create` | 10min | Mỗi ô 30' match giữ (N ô/trận, qua `match_slots`) trong lúc Host chờ STAFF confirm proof | matchmaking-service |
 | `lock:match:{matchId}` | 5s | Distributed lock — match joining (prevents race on last player slot) | matchmaking-service |
 | `payment:countdown:{paymentId}` | 10min | Payment screen countdown end time (ISO timestamp value) | payment-service |
@@ -21,6 +21,7 @@ alwaysApply: false
 | `password:reset:{token}` | 1h | Password reset token → userId | user-service |
 | `clubs:{district}:{sport}` | 60s | Cached **club** geo-search results (venue list theo quận + môn) | court-service |
 | `rate_limit:{userId}` | 60s | Global rate limit *intent* — api-gateway actually uses Spring Cloud Gateway's built-in `RequestRateLimiter` (token-bucket); live keys are `request_rate_limiter.{route}.{tokens\|timestamp}`, keyed by userId (or client IP on public paths) | api-gateway |
+| `rate_limit:booking:{userId}` | 60s | Max 10 booking-create attempts/min — chống 1 user squat lưới ô (fail-open; gateway `RequestRateLimiter` là lớp 2) | booking-service |
 | `rate_limit:join:{userId}` | 60s | Max 5 join attempts/min | matchmaking-service |
 | `rate_limit:proof:{userId}` | 300s | Max 3 proof uploads per 5 min | payment-service |
 | `rate_limit:review:{userId}` | 86400s | Max 2 reviews/day per coach | coach-service |

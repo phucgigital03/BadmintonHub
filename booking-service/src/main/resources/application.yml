@@ -47,7 +47,10 @@ app:
   booking:
     # PENDING hold window (= payment window). Slots auto-release after this if unpaid.
     # Must equal payment-service expire-minutes so the hold and its payment time out together.
-    hold-minutes: ${BOOKING_HOLD_MINUTES:15}
+    hold-minutes: ${BOOKING_HOLD_MINUTES:10}
+    # Absolute ceiling on total hold time from creation. begin-payment may re-anchor the hold but
+    # never past createdAt + this, so a slot can't be squatted indefinitely without paying.
+    max-hold-minutes: ${BOOKING_MAX_HOLD_MINUTES:30}
 
 eureka:
   client:

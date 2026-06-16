@@ -14,6 +14,7 @@ import com.badmintonhub.booking.entity.enums.CustomerType;
 import com.badmintonhub.booking.messaging.OutboxWriter;
 import com.badmintonhub.booking.repository.BookingItemRepository;
 import com.badmintonhub.booking.repository.BookingRepository;
+import com.badmintonhub.booking.service.BookingRateLimiter;
 import com.badmintonhub.booking.service.BookingService;
 import com.badmintonhub.booking.service.RedisSlotLockService;
 import com.badmintonhub.common.exception.ConflictException;
@@ -26,7 +27,9 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -54,99 +57,130 @@ public class BookingServiceImpl implements BookingService {
     private final BookingRepository bookingRepository;
     private final BookingItemRepository bookingItemRepository;
     private final RedisSlotLockService slotLockService;
+    private final BookingRateLimiter rateLimiter;
     private final CourtServiceClient courtServiceClient;
     private final OutboxWriter outboxWriter;
+    private final PlatformTransactionManager txManager;
 
     /** PENDING hold window (= payment window). Non-final so it stays out of the Lombok constructor. */
-    @Value("${app.booking.hold-minutes:15}")
+    @Value("${app.booking.hold-minutes:10}")
     private long holdMinutes;
 
+    /**
+     * Absolute ceiling on how long one order may stay held, measured from creation. begin-payment may
+     * re-anchor the hold (slow payer), but never past {@code createdAt + maxHoldMinutes} — otherwise the
+     * owner could re-anchor forever and squat the slot without paying. Non-final (out of the constructor).
+     */
+    @Value("${app.booking.max-hold-minutes:30}")
+    private long maxHoldMinutes;
+
+    /**
+     * NOTE: deliberately <b>not</b> {@code @Transactional}. The court-service Feign round-trip and all
+     * validation run <i>before</i> any DB transaction or Redis lock — a slow court-service must never pin a
+     * booking DB connection (pool exhaustion would take down cancel/refund too). Only the short
+     * header+items+outbox write runs in a transaction, via {@link TransactionTemplate} (a self-invoked
+     * {@code @Transactional} method would not be proxied).
+     */
     @Override
-    @Transactional
     public BookingResponse create(CreateBookingRequest req, UUID userId) {
+        // Per-user throttle (fail-open): stops a single user squatting the grid via spammed creates.
+        rateLimiter.check(userId);
+
         // Reject duplicate slots within the same request up front (deterministic, before any I/O).
         Set<UUID> slotIds = new LinkedHashSet<>(req.items().stream().map(CreateBookingRequest.Item::slotId).toList());
         if (slotIds.size() != req.items().size()) {
             throw new ConflictException("DUPLICATE_SLOT", "Có ô bị chọn trùng trong đơn");
         }
 
-        // 1. Lock every selected slot (all-or-nothing; releases in finally). Fail-open if Redis is down.
+        // Fast pre-check against active holds (the UNIQUE backstop in the tx below is authoritative).
+        if (bookingItemRepository.existsBySlotIdIn(slotIds)) {
+            throw new ConflictException("SLOT_TAKEN", "Một hoặc nhiều ô đã được đặt");
+        }
+
+        // One Feign round-trip — OUTSIDE any tx/lock: the club's day grid → authoritative price/time/status.
+        Map<UUID, SlotSnapshot> grid = fetchGridSnapshots(req.clubId(), req.date());
+
+        // Validate every selected slot + build the header and line items (snapshots frozen here). All of
+        // this is pure (no DB tx, no lock); the snapshots are immutable once captured.
+        LocalDateTime now = LocalDateTime.now();
+        Booking booking = new Booking();
+        booking.setUserId(userId);
+        booking.setClubId(req.clubId());
+        booking.setCustomerName(req.customerName());
+        booking.setCustomerPhone(req.customerPhone());
+        booking.setNote(req.note());
+        booking.setCustomerType(CustomerType.WALK_IN);
+        booking.setBookingDate(req.date());
+        booking.setStatus(BookingStatus.PENDING);
+
+        BigDecimal total = BigDecimal.ZERO;
+        LocalTime earliestStart = null;
+        List<BookingItem> items = new java.util.ArrayList<>();
+
+        for (CreateBookingRequest.Item reqItem : req.items()) {
+            SlotSnapshot snap = grid.get(reqItem.slotId());
+            if (snap == null) {
+                throw new ResourceNotFoundException("SLOT_NOT_FOUND",
+                        "Ô " + reqItem.slotId() + " không tồn tại cho CLB/ngày này");
+            }
+            if (!reqItem.courtId().equals(snap.courtId())) {
+                throw new ConflictException("COURT_MISMATCH",
+                        "Ô " + reqItem.slotId() + " không thuộc sân đã chọn");
+            }
+            // Reject a slot whose start has already passed (date alone is @FutureOrPresent — a same-day
+            // earlier slot would slip through). Never charge for an unusable cell.
+            if (LocalDateTime.of(req.date(), snap.startTime()).isBefore(now)) {
+                throw new ConflictException("SLOT_IN_PAST",
+                        "Ô " + snap.courtName() + " " + snap.startTime() + " đã qua giờ");
+            }
+            if (!snap.available()) {
+                throw new ConflictException("SLOT_NOT_AVAILABLE",
+                        "Ô " + snap.courtName() + " " + snap.startTime() + " không còn trống");
+            }
+            if (snap.price() == null) {
+                throw new ConflictException("PRICE_UNAVAILABLE",
+                        "Chưa có bảng giá cho ô " + snap.courtName() + " " + snap.startTime());
+            }
+
+            BookingItem item = new BookingItem();
+            item.setBooking(booking);
+            item.setCourtId(snap.courtId());
+            item.setSlotId(reqItem.slotId());
+            item.setCourtName(snap.courtName());
+            item.setStartTime(snap.startTime());
+            item.setEndTime(snap.endTime());
+            item.setPrice(snap.price());
+            items.add(item);
+
+            total = total.add(snap.price());
+            if (earliestStart == null || snap.startTime().isBefore(earliestStart)) {
+                earliestStart = snap.startTime();
+            }
+        }
+
+        booking.setTotalPrice(total);
+        booking.setEarliestStartTime(LocalDateTime.of(req.date(), earliestStart));
+        booking.setHoldExpiresAt(now.plusMinutes(holdMinutes));
+
+        // Lock every selected slot (all-or-nothing; releases in finally) — acquired AFTER Feign so no
+        // Redis lock is held across the network call. Fail-open if Redis is down (UNIQUE still guards).
         List<String> heldLocks = slotLockService.acquireAll(slotIds);
         try {
-            // 2. Fast pre-check against active holds (the UNIQUE backstop below is authoritative).
-            if (bookingItemRepository.existsBySlotIdIn(slotIds)) {
-                throw new ConflictException("SLOT_TAKEN", "Một hoặc nhiều ô đã được đặt");
-            }
-
-            // 3. One Feign round-trip: the club's day grid → authoritative price/time/status per slot.
-            Map<UUID, SlotSnapshot> grid = fetchGridSnapshots(req.clubId(), req.date());
-
-            // 4. Validate every selected slot + build the header and line items (snapshots frozen here).
-            Booking booking = new Booking();
-            booking.setUserId(userId);
-            booking.setClubId(req.clubId());
-            booking.setCustomerName(req.customerName());
-            booking.setCustomerPhone(req.customerPhone());
-            booking.setNote(req.note());
-            booking.setCustomerType(CustomerType.WALK_IN);
-            booking.setBookingDate(req.date());
-            booking.setStatus(BookingStatus.PENDING);
-
-            BigDecimal total = BigDecimal.ZERO;
-            LocalTime earliestStart = null;
-            List<BookingItem> items = new java.util.ArrayList<>();
-
-            for (CreateBookingRequest.Item reqItem : req.items()) {
-                SlotSnapshot snap = grid.get(reqItem.slotId());
-                if (snap == null) {
-                    throw new ResourceNotFoundException("SLOT_NOT_FOUND",
-                            "Ô " + reqItem.slotId() + " không tồn tại cho CLB/ngày này");
+            // Short transaction: persist header + items + outbox atomically. Programmatic (not @Transactional
+            // on this method) so the heavy I/O above stays outside the DB connection's hold time.
+            new TransactionTemplate(txManager).executeWithoutResult(status -> {
+                bookingRepository.save(booking);
+                try {
+                    // saveAllAndFlush forces the INSERT now so the UNIQUE(slot_id) violation surfaces here
+                    // (caught → 409) rather than at commit (→ 500).
+                    bookingItemRepository.saveAllAndFlush(items);
+                } catch (DataIntegrityViolationException e) {
+                    throw new ConflictException("SLOT_TAKEN", "Một hoặc nhiều ô vừa được người khác đặt");
                 }
-                if (!reqItem.courtId().equals(snap.courtId())) {
-                    throw new ConflictException("COURT_MISMATCH",
-                            "Ô " + reqItem.slotId() + " không thuộc sân đã chọn");
-                }
-                if (!snap.available()) {
-                    throw new ConflictException("SLOT_NOT_AVAILABLE",
-                            "Ô " + snap.courtName() + " " + snap.startTime() + " không còn trống");
-                }
-                if (snap.price() == null) {
-                    throw new ConflictException("PRICE_UNAVAILABLE",
-                            "Chưa có bảng giá cho ô " + snap.courtName() + " " + snap.startTime());
-                }
-
-                BookingItem item = new BookingItem();
-                item.setBooking(booking);
-                item.setCourtId(snap.courtId());
-                item.setSlotId(reqItem.slotId());
-                item.setCourtName(snap.courtName());
-                item.setStartTime(snap.startTime());
-                item.setEndTime(snap.endTime());
-                item.setPrice(snap.price());
-                items.add(item);
-
-                total = total.add(snap.price());
-                if (earliestStart == null || snap.startTime().isBefore(earliestStart)) {
-                    earliestStart = snap.startTime();
-                }
-            }
-
-            booking.setTotalPrice(total);
-            booking.setEarliestStartTime(LocalDateTime.of(req.date(), earliestStart));
-            booking.setHoldExpiresAt(LocalDateTime.now().plusMinutes(holdMinutes));
-
-            bookingRepository.save(booking);
-            try {
-                // saveAllAndFlush forces the INSERT now so the UNIQUE(slot_id) violation surfaces inside
-                // this try (caught → 409) rather than at commit (→ 500).
-                bookingItemRepository.saveAllAndFlush(items);
-            } catch (DataIntegrityViolationException e) {
-                throw new ConflictException("SLOT_TAKEN", "Một hoặc nhiều ô vừa được người khác đặt");
-            }
-
-            // Outbox (same tx): tell court-service to flip these slots RESERVED → grid shows them taken.
-            List<UUID> slotIdList = items.stream().map(BookingItem::getSlotId).toList();
-            outboxWriter.writeSlotHeld(booking.getId(), slotIdList, booking.getHoldExpiresAt());
+                // Outbox (same tx): tell court-service to flip these slots RESERVED → grid shows them taken.
+                List<UUID> slotIdList = items.stream().map(BookingItem::getSlotId).toList();
+                outboxWriter.writeSlotHeld(booking.getId(), slotIdList, booking.getHoldExpiresAt());
+            });
 
             log.info("Booking {} created: user={} club={} items={} total={} holdExpiresAt={}",
                     booking.getId(), userId, req.clubId(), items.size(), total, booking.getHoldExpiresAt());
@@ -181,8 +215,9 @@ public class BookingServiceImpl implements BookingService {
         }
 
         // Re-anchor the hold to the payment window so HoldExpiryScheduler won't cancel mid-payment
-        // (the slow-payer gets a full window from the moment they start paying).
-        booking.setHoldExpiresAt(LocalDateTime.now().plusMinutes(holdMinutes));
+        // (the slow-payer gets a full window from the moment they start paying) — but never past the
+        // absolute ceiling from creation, so begin-payment can't be spammed to hold the slot forever.
+        booking.setHoldExpiresAt(reAnchoredHold(booking));
         bookingRepository.save(booking);
 
         log.info("Booking {} claimed for payment by {} — hold re-anchored to {}",
@@ -242,6 +277,27 @@ public class BookingServiceImpl implements BookingService {
 
         log.info("Booking {} cancelled by {} (wasPaid={}), refund={}", id, actorId, wasConfirmed, refund);
         return toResponse(booking, List.of());
+    }
+
+    /**
+     * Re-anchored hold for begin-payment: {@code now + holdMinutes}, but clamped to the absolute ceiling
+     * {@code createdAt + maxHoldMinutes}. If less than ~1 min of runway remains under that ceiling the order
+     * has been held too long without paying — reject with 409 (payment-service treats this as
+     * {@code BOOKING_NOT_PAYABLE} → no new payment) so the slot frees instead of being squatted indefinitely.
+     */
+    private LocalDateTime reAnchoredHold(Booking booking) {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime created = booking.getCreatedAt();
+        if (created == null) {
+            return now.plusMinutes(holdMinutes); // defensive — createdAt is always set on a loaded entity
+        }
+        LocalDateTime ceiling = created.plusMinutes(maxHoldMinutes);
+        if (!now.plusMinutes(1).isBefore(ceiling)) {
+            throw new ConflictException("BOOKING_HOLD_EXHAUSTED",
+                    "Đơn đã được giữ quá lâu mà chưa thanh toán, vui lòng đặt lại");
+        }
+        LocalDateTime desired = now.plusMinutes(holdMinutes);
+        return desired.isBefore(ceiling) ? desired : ceiling;
     }
 
     /**
