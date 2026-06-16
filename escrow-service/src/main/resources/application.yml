@@ -27,6 +27,11 @@ spring:
 server:
   port: 3007
 
+# JWT — HS256, validate only (re-validate forwarded Bearer token via common-security JwtUtil).
+# No default so startup fails fast if missing; JWT_SECRET is shared in root .env.
+jwt:
+  secret: ${JWT_SECRET}
+
 eureka:
   client:
     service-url:
