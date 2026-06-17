@@ -61,6 +61,20 @@ export default function MyBookingsPage() {
     retry: false,
   });
 
+  /** Re-enter payment for a PENDING order (initiate is idempotent → reuses the active payment). */
+  const goPay = (b: BookingResponse) =>
+    navigate('/payment', {
+      state: {
+        bookingId: b.id,
+        summary: {
+          customerName: b.customerName,
+          customerPhone: b.customerPhone,
+          detail: b.items.map(bookingItemLabel).join(', '),
+          date: b.bookingDate,
+        },
+      },
+    });
+
   const cancelMut = useMutation({
     mutationFn: (id: string) => bookingsApi.cancel(id),
     onSuccess: () => {
@@ -116,6 +130,11 @@ export default function MyBookingsPage() {
                 <Button variant="outline" size="sm" onClick={() => setDetailId(b.id)}>
                   Chi tiết
                 </Button>
+                {b.status === 'PENDING' && (
+                  <Button variant="gold" size="sm" onClick={() => goPay(b)}>
+                    Thanh toán
+                  </Button>
+                )}
                 {cancellable(b.status) && (
                   <Button
                     variant="outline"

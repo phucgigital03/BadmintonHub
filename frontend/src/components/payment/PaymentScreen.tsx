@@ -1,21 +1,54 @@
 import { useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTranslation } from 'react-i18next';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import type { PaymentInfo } from '../../types';
+import type { AxiosError } from 'axios';
+import { paymentsApi, paymentStatusLabel, type PaymentResponse } from '../../api/payments';
 import { useCountdown } from '../../hooks/useCountdown';
 import { Button } from '../ui/Button';
 import { formatVnd } from '../../lib/cn';
 import { dmy } from '../../lib/format';
 
-/** Bank-QR payment screen — matches alobo "Thanh toán" + payment.md flow. */
-export function PaymentScreen({ payment, onDone }: { payment: PaymentInfo; onDone: () => void }) {
+export interface PaymentSummary {
+  customerName?: string;
+  customerPhone?: string;
+  detail?: string; // "Sân 2 10h00-10h30, …"
+  date?: string; // "yyyy-MM-dd"
+}
+
+const isHttpUrl = (u: string | null): u is string => !!u && /^https?:\/\//.test(u);
+
+/** Bank-QR payment screen wired to payment-service: upload proof → poll until STAFF confirm/reject. */
+export function PaymentScreen({
+  payment: initial,
+  summary,
+  onDone,
+}: {
+  payment: PaymentResponse;
+  summary?: PaymentSummary;
+  onDone: () => void;
+}) {
   const { t } = useTranslation();
-  const { mmss, expired } = useCountdown(payment.expiresAt);
-  const [proof, setProof] = useState<string | null>(null);
+  const qc = useQueryClient();
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const qrValue = `${payment.bankName}|${payment.accountNumber}|${payment.amount}|#${payment.orderCode}`;
+  // Live payment: seeded with the initiate result, polled while it can still change (PENDING / awaiting STAFF).
+  const { data: payment = initial } = useQuery({
+    queryKey: ['payment', initial.id],
+    queryFn: () => paymentsApi.getById(initial.id),
+    initialData: initial,
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      return s === 'PENDING' || s === 'PROOF_SUBMITTED' ? 5000 : false;
+    },
+  });
+
+  const { mmss, expired } = useCountdown(payment.expiresAt);
+
+  const qrValue = `${payment.bankName}|${payment.accountNumber}|${payment.amount}|${payment.orderCode}`;
 
   const copy = () => {
     navigator.clipboard?.writeText(payment.accountNumber);
@@ -24,15 +57,50 @@ export function PaymentScreen({ payment, onDone }: { payment: PaymentInfo; onDon
 
   const onPickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
-    if (f) setProof(URL.createObjectURL(f));
+    if (f) {
+      setFile(f);
+      setPreview(URL.createObjectURL(f));
+    }
   };
 
-  const confirm = () => {
-    // payment-service is Day 8 — this screen is a DEMO. The booking is already created (PENDING) and
-    // is holding the slots; here we just continue to "Lịch đặt của tôi".
-    toast.success('Demo thanh toán — đơn đã được giữ chỗ. Xem ở "Lịch đặt của tôi".');
-    onDone();
-  };
+  const proofMut = useMutation({
+    mutationFn: () => paymentsApi.submitProof(payment.id, file as File),
+    onSuccess: (updated) => {
+      qc.setQueryData(['payment', payment.id], updated);
+      qc.invalidateQueries({ queryKey: ['my-bookings'] });
+      toast.success('Đã nộp chứng từ — chờ STAFF duyệt');
+    },
+    onError: (err: AxiosError<{ message?: string }>) =>
+      toast.error(err.response?.data?.message ?? 'Nộp chứng từ thất bại'),
+  });
+
+  // ── Terminal states: short status panels instead of the QR form ──
+  if (payment.status === 'CONFIRMED') {
+    return (
+      <ResultPanel icon="✅" tone="ok" title="Đã xác nhận — đặt sân thành công!" onDone={onDone}>
+        Thanh toán <b>{payment.orderCode}</b> đã được STAFF xác nhận. Đơn của bạn đã <b>CONFIRMED</b>.
+      </ResultPanel>
+    );
+  }
+  if (payment.status === 'REFUNDED') {
+    return (
+      <ResultPanel icon="↩️" tone="ok" title="Đã hoàn tiền" onDone={onDone}>
+        Thanh toán {payment.orderCode} đã được hoàn{' '}
+        {payment.refundAmount != null ? <b>{formatVnd(payment.refundAmount)}</b> : null}.
+      </ResultPanel>
+    );
+  }
+  if (payment.status === 'EXPIRED') {
+    return (
+      <ResultPanel icon="⌛" tone="bad" title="Thanh toán đã hết hạn / bị từ chối" onDone={onDone}>
+        {payment.refundRequired
+          ? 'Hệ thống ghi nhận bạn có thể đã chuyển khoản — đơn đã được đánh dấu chờ STAFF hoàn tiền.'
+          : 'Đơn đã được trả ô. Vui lòng đặt lại nếu cần.'}
+      </ResultPanel>
+    );
+  }
+
+  const submitted = payment.status === 'PROOF_SUBMITTED';
 
   return (
     <div className="rounded-2xl bg-emerald-50 p-4 text-gray-800 sm:p-6">
@@ -51,14 +119,20 @@ export function PaymentScreen({ payment, onDone }: { payment: PaymentInfo; onDon
               <p className="text-sm"><span className="text-gray-500">{t('payment.bank')}: </span><b>{payment.bankName}</b></p>
             </div>
             <div className="shrink-0 rounded-lg bg-white p-1">
-              <QRCodeSVG value={qrValue} size={104} />
+              {isHttpUrl(payment.qrImageUrl) ? (
+                <img src={payment.qrImageUrl} alt="QR" className="h-[104px] w-[104px] object-contain" />
+              ) : (
+                <QRCodeSVG value={qrValue} size={104} />
+              )}
             </div>
           </div>
 
           <div className="mt-3 rounded-lg bg-emerald-500/90 px-3 py-2.5 text-center text-sm font-medium text-white">
             ⚠️ {t('payment.transferNote', { amount: formatVnd(payment.amount) })}
           </div>
-          <p className="mt-2 text-center text-sm font-medium text-gray-700">{t('payment.holdNote')}</p>
+          <p className="mt-2 text-center text-sm font-medium text-gray-700">
+            Nội dung chuyển khoản: <b>{payment.orderCode}</b>
+          </p>
 
           <p className="mt-3 text-center text-sm">{t('payment.heldFor')}</p>
           <p className={`text-center text-2xl font-bold ${expired ? 'text-red-500' : 'text-gray-800'}`}>
@@ -66,11 +140,12 @@ export function PaymentScreen({ payment, onDone }: { payment: PaymentInfo; onDon
           </p>
 
           <button
-            onClick={() => fileRef.current?.click()}
-            className="mx-auto mt-3 flex h-44 w-full max-w-xs flex-col items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-400 hover:border-emerald-400"
+            onClick={() => !submitted && fileRef.current?.click()}
+            disabled={submitted}
+            className="mx-auto mt-3 flex h-44 w-full max-w-xs flex-col items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-400 hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-70"
           >
-            {proof ? (
-              <img src={proof} alt="proof" className="h-full w-full rounded-xl object-contain" />
+            {preview ? (
+              <img src={preview} alt="proof" className="h-full w-full rounded-xl object-contain" />
             ) : (
               <>
                 <span className="text-3xl" aria-hidden>🖼️</span>
@@ -85,26 +160,64 @@ export function PaymentScreen({ payment, onDone }: { payment: PaymentInfo; onDon
         <div className="rounded-xl bg-white p-4 shadow-sm">
           <h2 className="mb-3 font-bold">{t('payment.orderInfo')}</h2>
           <dl className="space-y-3 text-sm">
-            <Row icon="👤" label="Tên" value={payment.customerName ?? '-'} />
-            <Row icon="📞" label="SĐT" value={payment.customerPhone ?? '-'} />
-            <Row icon="🏆" label={t('payment.orderCode')} value={`#${payment.orderCode}`} />
+            <Row icon="👤" label="Tên" value={summary?.customerName ?? '-'} />
+            <Row icon="📞" label="SĐT" value={summary?.customerPhone ?? '-'} />
+            <Row icon="🏆" label={t('payment.orderCode')} value={payment.orderCode} />
             <Row
               icon="📅"
               label={t('payment.orderDetail')}
-              value={`${payment.date ? dmy(payment.date) : ''}${payment.detail ? ' — ' + payment.detail : ''}`}
+              value={`${summary?.date ? dmy(summary.date) : ''}${summary?.detail ? ' — ' + summary.detail : ''}`}
             />
-            <Row icon="💵" label={t('payment.orderTotal')} value={formatVnd(payment.amount)} />
             <Row icon="🪙" label={t('payment.amountDue')} value={formatVnd(payment.amount)} bold />
+            <Row icon="📌" label="Trạng thái" value={paymentStatusLabel(payment.status)} />
           </dl>
         </div>
       </div>
 
-      <Button variant="gold" size="lg" fullWidth className="mt-6" onClick={confirm}>
-        {t('payment.confirmBooking')}
+      {submitted ? (
+        <div className="mt-6 rounded-xl bg-amber-100 px-4 py-3 text-center text-sm font-medium text-amber-800">
+          ✔️ Đã nộp chứng từ. Đang chờ STAFF duyệt — màn hình sẽ tự cập nhật khi có kết quả.
+        </div>
+      ) : (
+        <Button
+          variant="gold"
+          size="lg"
+          fullWidth
+          className="mt-6"
+          disabled={!file || proofMut.isPending}
+          onClick={() => proofMut.mutate()}
+        >
+          {proofMut.isPending ? 'Đang gửi…' : 'Đã chuyển khoản — Nộp chứng từ'}
+        </Button>
+      )}
+      <button onClick={onDone} className="mt-3 w-full text-center text-xs text-gray-500 hover:underline">
+        Để sau — xem ở "Lịch đặt của tôi"
+      </button>
+    </div>
+  );
+}
+
+function ResultPanel({
+  icon,
+  tone,
+  title,
+  children,
+  onDone,
+}: {
+  icon: string;
+  tone: 'ok' | 'bad';
+  title: string;
+  children: React.ReactNode;
+  onDone: () => void;
+}) {
+  return (
+    <div className="rounded-2xl bg-white p-8 text-center text-gray-800 shadow-sm">
+      <div className="text-5xl" aria-hidden>{icon}</div>
+      <h2 className={`mt-3 text-xl font-bold ${tone === 'ok' ? 'text-emerald-600' : 'text-red-500'}`}>{title}</h2>
+      <p className="mx-auto mt-2 max-w-md text-sm text-gray-600">{children}</p>
+      <Button variant="gold" size="lg" className="mt-6" onClick={onDone}>
+        Về "Lịch đặt của tôi"
       </Button>
-      <p className="mt-2 text-center text-xs text-gray-500">
-        ⓘ Thanh toán Bank QR đang phát triển (Day 8). Đơn đã được <b>giữ chỗ</b> ngay khi tạo — đây là màn demo.
-      </p>
     </div>
   );
 }

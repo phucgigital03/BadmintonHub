@@ -13,7 +13,8 @@ import { useBookingStore } from '../../store/bookingStore';
 import { useAuthStore } from '../../store/authStore';
 import { formatVnd } from '../../lib/cn';
 import { bookingsApi, type BookingResponse } from '../../api/bookings';
-import type { PaymentInfo, TimeSlot } from '../../types';
+import type { PaymentSummary } from '../../components/payment/PaymentScreen';
+import type { TimeSlot } from '../../types';
 
 const hm = (s: string) => s.replace(':', 'h');
 
@@ -68,27 +69,19 @@ export default function BookingConfirmPage() {
   const ranges = mergeRanges(selected, 0.5 * court.pricePerHour);
 
   // Real create → POST /api/bookings (needs login + verified email). On success we hand the REAL
-  // booking off to the (demo) payment screen; payment-service itself is Day 8.
+  // bookingId to PaymentPage, which calls payment-service initiate (real bank/QR/countdown).
   const createMut = useMutation({
     mutationFn: bookingsApi.create,
     onSuccess: (booking: BookingResponse) => {
-      const payment: PaymentInfo = {
-        paymentId: booking.id,
-        orderCode: Number(booking.id.replace(/\D/g, '').slice(0, 6)) || 0,
-        paymentType: 'BOOKING',
-        bankName: 'Ngân hàng Shinhan Việt Nam', // demo — payment-service (Day 8) sẽ trả TK thật
-        accountNumber: '0962728894',
-        accountName: 'Trần Quốc Phú',
-        amount: booking.totalPrice,
-        expiresAt: booking.holdExpiresAt ?? new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      const summary: PaymentSummary = {
         customerName: booking.customerName,
         customerPhone: booking.customerPhone,
         detail: ranges.map((r) => `${r.courtName} ${hm(r.start)}-${hm(r.end)}`).join(', '),
         date: booking.bookingDate,
       };
       clearSelection();
-      toast.success('Đã giữ chỗ — đơn đang chờ thanh toán');
-      navigate('/payment', { state: payment });
+      toast.success('Đã giữ chỗ — tiến hành thanh toán');
+      navigate('/payment', { state: { bookingId: booking.id, summary } });
     },
     onError: (err: AxiosError<{ message?: string }>) =>
       toast.error(err.response?.data?.message ?? 'Đặt lịch thất bại, vui lòng thử lại'),

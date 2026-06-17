@@ -10,7 +10,9 @@ import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Pill } from '../../components/ui/Pill';
 import { Spinner } from '../../components/ui/EmptyState';
+import { Modal } from '../../components/ui/Modal';
 import { usersApi } from '../../api/users';
+import { paymentsApi, paymentStatusLabel, type PaymentResponse } from '../../api/payments';
 import {
   clubsApi,
   type SportEnum,
@@ -32,8 +34,8 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'refunds', label: 'Hoàn tiền' },
 ];
 
-// Tabs wired to a real backend (no mock banner): user-service + court-service.
-const REAL_TABS: Tab[] = ['users', 'court'];
+// Tabs wired to a real backend (no mock banner): user-service + court-service + payment-service.
+const REAL_TABS: Tab[] = ['users', 'court', 'proofs', 'refunds'];
 
 function AdminInner() {
   const navigate = useNavigate();
@@ -62,22 +64,7 @@ function AdminInner() {
 
       {tab === 'court' && <CourtAdminTab />}
 
-      {tab === 'proofs' && (
-        <div className="space-y-3">
-          {[184, 185].map((code) => (
-            <Card key={code} className="flex items-center justify-between gap-3">
-              <div>
-                <p className="font-semibold">Đơn #{code}</p>
-                <p className="text-sm text-white/80">EVENT_TICKET · {formatVnd(60000)}</p>
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" onClick={() => toast.success(`Đã xác nhận #${code}`)}>Xác nhận</Button>
-                <Button size="sm" variant="danger" onClick={() => toast.error(`Đã từ chối #${code}`)}>Từ chối</Button>
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
+      {tab === 'proofs' && <ProofsTab />}
 
       {tab === 'matches' && (
         <div className="space-y-3">
@@ -100,7 +87,7 @@ function AdminInner() {
         <Card><p className="text-white/80">Danh sách đặt sân (mock) — sẽ nối API booking-service.</p></Card>
       )}
 
-      {tab === 'refunds' && <RefundForm />}
+      {tab === 'refunds' && <RefundsTab />}
     </PageShell>
   );
 }
@@ -386,22 +373,190 @@ function CourtAdminTab() {
   );
 }
 
-function RefundForm() {
+// ── Duyệt thanh toán: GET /pending-review → confirm / reject (real payment-service) ──
+function ProofsTab() {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ['admin-pending-review'],
+    queryFn: () => paymentsApi.listPendingReview(0, 50),
+    retry: false,
+  });
+  const onErr = (e: AxiosError<{ message?: string }>) =>
+    toast.error(e.response?.data?.message ?? `Lỗi (HTTP ${e.response?.status ?? '?'})`);
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['admin-pending-review'] });
+    qc.invalidateQueries({ queryKey: ['admin-refund-required'] });
+  };
+
+  const confirm = useMutation({
+    mutationFn: (id: string) => paymentsApi.confirm(id),
+    onSuccess: (p) => { toast.success(`Đã xác nhận ${p.orderCode}`); invalidate(); },
+    onError: onErr,
+  });
+  const reject = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) => paymentsApi.reject(id, reason),
+    onSuccess: (p) => { toast.success(`Đã từ chối ${p.orderCode}`); invalidate(); },
+    onError: onErr,
+  });
+
+  if (q.isPending) return <Spinner label="Đang tải hàng chờ duyệt..." />;
+  if (q.isError) {
+    const status = (q.error as AxiosError)?.response?.status;
+    return (
+      <Card>
+        <p className="text-white/80">
+          Không tải được hàng chờ duyệt{status ? ` (HTTP ${status})` : ''}. Cần STAFF/ADMIN + payment-service :3006.
+        </p>
+      </Card>
+    );
+  }
+  if (q.data.content.length === 0)
+    return <Card><p className="text-white/80">Không có chứng từ nào đang chờ duyệt. 🎉</p></Card>;
+
+  const busy = confirm.isPending || reject.isPending;
+  return (
+    <div className="space-y-3">
+      {q.data.content.map((p) => (
+        <Card key={p.id} className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-semibold">{p.orderCode} · {p.paymentType}</p>
+            <p className="text-sm text-white/80">
+              {formatVnd(p.amount)} · {new Date(p.createdAt).toLocaleString('vi-VN')}
+            </p>
+            {p.bookingId && <p className="break-all text-xs text-white/50">booking: {p.bookingId}</p>}
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" disabled={busy} onClick={() => confirm.mutate(p.id)}>Xác nhận</Button>
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={busy}
+              onClick={() => {
+                const reason = window.prompt('Lý do từ chối (tuỳ chọn):');
+                if (reason === null) return; // cancelled prompt → abort
+                reject.mutate({ id: p.id, reason: reason.trim() || undefined });
+              }}
+            >
+              Từ chối
+            </Button>
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+// ── Hoàn tiền: GET /refund-required → refund modal (real, amount capped at paid) ──
+function RefundsTab() {
+  const qc = useQueryClient();
+  const [target, setTarget] = useState<PaymentResponse | null>(null);
+  const q = useQuery({
+    queryKey: ['admin-refund-required'],
+    queryFn: () => paymentsApi.listRefundRequired(0, 50),
+    retry: false,
+  });
+
+  if (q.isPending) return <Spinner label="Đang tải đơn cần hoàn..." />;
+  if (q.isError) {
+    const status = (q.error as AxiosError)?.response?.status;
+    return (
+      <Card>
+        <p className="text-white/80">
+          Không tải được danh sách hoàn tiền{status ? ` (HTTP ${status})` : ''}. Cần STAFF/ADMIN + payment-service :3006.
+        </p>
+      </Card>
+    );
+  }
+  if (q.data.content.length === 0)
+    return <Card><p className="text-white/80">Không có đơn nào cần hoàn tiền. 🎉</p></Card>;
+
+  return (
+    <div className="space-y-3">
+      {q.data.content.map((p) => (
+        <Card key={p.id} className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-semibold">{p.orderCode} · {paymentStatusLabel(p.status)}</p>
+            <p className="text-sm text-white/80">
+              Đã thu {formatVnd(p.amount)}
+              {p.refundRequiredAmount != null && (
+                <> · gợi ý hoàn <span className="font-semibold text-brand-accent">{formatVnd(p.refundRequiredAmount)}</span></>
+              )}
+            </p>
+            {p.bookingId && <p className="break-all text-xs text-white/50">booking: {p.bookingId}</p>}
+          </div>
+          <Button size="sm" onClick={() => setTarget(p)}>Hoàn tiền</Button>
+        </Card>
+      ))}
+      <RefundModal
+        payment={target}
+        onClose={() => setTarget(null)}
+        onDone={() => {
+          setTarget(null);
+          qc.invalidateQueries({ queryKey: ['admin-refund-required'] });
+        }}
+      />
+    </div>
+  );
+}
+
+function RefundModal({
+  payment,
+  onClose,
+  onDone,
+}: {
+  payment: PaymentResponse | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
   const [form, setForm] = useState({ toBankName: '', toAccountNumber: '', toAccountName: '', amount: '', refundNote: '' });
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  // Prefill amount with the suggested refund (or the full paid amount) whenever a new target opens.
+  useEffect(() => {
+    if (payment) {
+      const suggested = payment.refundRequiredAmount ?? payment.amount;
+      setForm({ toBankName: '', toAccountNumber: '', toAccountName: '', amount: String(suggested), refundNote: '' });
+    }
+  }, [payment]);
+
+  const refund = useMutation({
+    mutationFn: () =>
+      paymentsApi.refund(payment!.id, {
+        amount: Number(form.amount),
+        toBankName: form.toBankName,
+        toAccountNumber: form.toAccountNumber,
+        toAccountName: form.toAccountName,
+        refundNote: form.refundNote || undefined,
+      }),
+    onSuccess: (p) => { toast.success(`Đã hoàn ${formatVnd(p.refundAmount ?? 0)} cho ${p.orderCode}`); onDone(); },
+    onError: (e: AxiosError<{ message?: string }>) =>
+      toast.error(e.response?.data?.message ?? 'Hoàn tiền thất bại'),
+  });
+
+  const fieldCls = 'rounded-lg bg-white px-3 py-2 text-gray-800 outline-none border border-gray-200';
+  const valid = form.toBankName && form.toAccountNumber && form.toAccountName && Number(form.amount) > 0;
+
   return (
-    <Card>
-      <h3 className="mb-3 font-bold text-brand-accent">Hoàn tiền thủ công</h3>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <input placeholder="Ngân hàng" value={form.toBankName} onChange={set('toBankName')} className="rounded-lg bg-white px-3 py-2 text-gray-800 outline-none" />
-        <input placeholder="Số tài khoản" value={form.toAccountNumber} onChange={set('toAccountNumber')} className="rounded-lg bg-white px-3 py-2 text-gray-800 outline-none" />
-        <input placeholder="Tên tài khoản" value={form.toAccountName} onChange={set('toAccountName')} className="rounded-lg bg-white px-3 py-2 text-gray-800 outline-none" />
-        <input placeholder="Số tiền" value={form.amount} onChange={set('amount')} className="rounded-lg bg-white px-3 py-2 text-gray-800 outline-none" />
-      </div>
-      <textarea placeholder="Ghi chú hoàn tiền" value={form.refundNote} onChange={set('refundNote')} rows={2} className="mt-3 w-full rounded-lg bg-white px-3 py-2 text-gray-800 outline-none" />
-      <Button className="mt-3" onClick={() => toast.success('Đã ghi nhận yêu cầu hoàn tiền')}>Ghi nhận hoàn tiền</Button>
-    </Card>
+    <Modal open={!!payment} onClose={onClose} title={payment ? `Hoàn tiền ${payment.orderCode}` : 'Hoàn tiền'}>
+      {payment && (
+        <div className="space-y-3 text-sm text-gray-800">
+          <p className="text-gray-500">
+            Đã thu <b>{formatVnd(payment.amount)}</b> — không thể hoàn quá số này.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <input placeholder="Ngân hàng" value={form.toBankName} onChange={set('toBankName')} className={fieldCls} />
+            <input placeholder="Số tài khoản" value={form.toAccountNumber} onChange={set('toAccountNumber')} className={fieldCls} />
+            <input placeholder="Tên tài khoản" value={form.toAccountName} onChange={set('toAccountName')} className={fieldCls} />
+            <input placeholder="Số tiền" value={form.amount} onChange={set('amount')} className={fieldCls} />
+          </div>
+          <textarea placeholder="Ghi chú hoàn tiền" value={form.refundNote} onChange={set('refundNote')} rows={2} className={`${fieldCls} w-full`} />
+          <Button fullWidth disabled={!valid || refund.isPending} onClick={() => refund.mutate()}>
+            {refund.isPending ? 'Đang hoàn…' : 'Xác nhận đã chuyển khoản hoàn tiền'}
+          </Button>
+        </div>
+      )}
+    </Modal>
   );
 }
 
