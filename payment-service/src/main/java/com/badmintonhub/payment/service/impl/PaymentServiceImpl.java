@@ -1,5 +1,6 @@
 package com.badmintonhub.payment.service.impl;
 
+import com.badmintonhub.common.exception.ApiException;
 import com.badmintonhub.common.exception.ConflictException;
 import com.badmintonhub.common.exception.ForbiddenException;
 import com.badmintonhub.common.exception.ResourceNotFoundException;
@@ -27,6 +28,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -97,6 +99,10 @@ public class PaymentServiceImpl implements PaymentService {
         BigDecimal amount = req.amount();
         if (forBooking) {
             amount = beginBookingPayment(req.bookingId()).totalPrice();
+        } else if (amount == null || amount.signum() <= 0) {
+            // BOOKING derives the amount above; every other type must carry a positive client amount.
+            throw new ApiException("AMOUNT_REQUIRED",
+                    "amount là bắt buộc cho loại thanh toán này", HttpStatus.BAD_REQUEST);
         }
 
         BankAccount bank = bankAccountRepository.findFirstByIsActiveTrue()
