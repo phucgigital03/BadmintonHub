@@ -398,6 +398,15 @@ function ProofsTab() {
     onSuccess: (p) => { toast.success(`Đã từ chối ${p.orderCode}`); invalidate(); },
     onError: onErr,
   });
+  const [detail, setDetail] = useState<PaymentResponse | null>(null);
+
+  // Reject asks for an optional reason; returns false if the STAFF cancelled the prompt.
+  const doReject = (id: string) => {
+    const reason = window.prompt('Lý do từ chối (tuỳ chọn):');
+    if (reason === null) return false; // cancelled prompt → abort
+    reject.mutate({ id, reason: reason.trim() || undefined });
+    return true;
+  };
 
   if (q.isPending) return <Spinner label="Đang tải hàng chờ duyệt..." />;
   if (q.isError) {
@@ -426,23 +435,91 @@ function ProofsTab() {
             {p.bookingId && <p className="break-all text-xs text-white/50">booking: {p.bookingId}</p>}
           </div>
           <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setDetail(p)}>Xem</Button>
             <Button size="sm" disabled={busy} onClick={() => confirm.mutate(p.id)}>Xác nhận</Button>
-            <Button
-              size="sm"
-              variant="danger"
-              disabled={busy}
-              onClick={() => {
-                const reason = window.prompt('Lý do từ chối (tuỳ chọn):');
-                if (reason === null) return; // cancelled prompt → abort
-                reject.mutate({ id: p.id, reason: reason.trim() || undefined });
-              }}
-            >
-              Từ chối
-            </Button>
+            <Button size="sm" variant="danger" disabled={busy} onClick={() => doReject(p.id)}>Từ chối</Button>
           </div>
         </Card>
       ))}
+      <ProofDetailModal
+        payment={detail}
+        busy={busy}
+        onClose={() => setDetail(null)}
+        onConfirm={(id) => { confirm.mutate(id); setDetail(null); }}
+        onReject={(id) => { if (doReject(id)) setDetail(null); }}
+      />
     </div>
+  );
+}
+
+// Detail modal for a pending payment: payment summary + the uploaded transfer screenshot(s).
+function ProofDetailModal({
+  payment,
+  busy,
+  onClose,
+  onConfirm,
+  onReject,
+}: {
+  payment: PaymentResponse | null;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: (id: string) => void;
+  onReject: (id: string) => void;
+}) {
+  const q = useQuery({
+    queryKey: ['payment-proofs', payment?.id],
+    queryFn: () => paymentsApi.getProofs(payment!.id),
+    enabled: !!payment,
+    retry: false,
+  });
+
+  return (
+    <Modal open={!!payment} onClose={onClose} title={payment ? `Chi tiết ${payment.orderCode}` : 'Chi tiết'}>
+      {payment && (
+        <div className="space-y-4 text-sm text-gray-800">
+          <div className="space-y-1">
+            <p><span className="text-gray-500">Loại:</span> <b>{payment.paymentType}</b></p>
+            <p><span className="text-gray-500">Số tiền:</span> <b>{formatVnd(payment.amount)}</b></p>
+            <p><span className="text-gray-500">Thời gian:</span> {new Date(payment.createdAt).toLocaleString('vi-VN')}</p>
+            <p><span className="text-gray-500">Nhận tiền:</span> {payment.bankName} · {payment.accountNumber}</p>
+            {payment.bookingId && <p className="break-all text-xs text-gray-400">booking: {payment.bookingId}</p>}
+          </div>
+
+          <div>
+            <p className="mb-2 font-semibold">Ảnh chuyển khoản</p>
+            {q.isPending ? (
+              <Spinner label="Đang tải ảnh..." />
+            ) : q.isError ? (
+              <p className="text-red-600">Không tải được ảnh chứng từ.</p>
+            ) : q.data.length === 0 ? (
+              <p className="text-gray-500">Chưa có ảnh nào được tải lên.</p>
+            ) : (
+              <div className="space-y-3">
+                {q.data.map((proof, i) =>
+                  proof.imageUrl.startsWith('http') ? (
+                    <a key={i} href={proof.imageUrl} target="_blank" rel="noreferrer" className="block">
+                      <img src={proof.imageUrl} alt={`proof ${i + 1}`} className="w-full rounded-xl border border-gray-200 object-contain" />
+                      <span className="mt-1 block text-xs text-gray-400">
+                        {new Date(proof.uploadedAt).toLocaleString('vi-VN')} · bấm để mở ảnh gốc
+                      </span>
+                    </a>
+                  ) : (
+                    <p key={i} className="rounded-lg bg-gray-100 px-3 py-2 text-xs text-gray-500">
+                      Ảnh không khả dụng (local-fallback): {proof.imageUrl}
+                    </p>
+                  ),
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2 border-t border-gray-100 pt-3">
+            <Button fullWidth disabled={busy} onClick={() => onConfirm(payment.id)}>Xác nhận</Button>
+            <Button fullWidth variant="danger" disabled={busy} onClick={() => onReject(payment.id)}>Từ chối</Button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 

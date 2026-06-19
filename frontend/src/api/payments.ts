@@ -51,6 +51,15 @@ const STATUS_LABEL: Record<PaymentStatus, string> = {
 };
 export const paymentStatusLabel = (s: PaymentStatus) => STATUS_LABEL[s];
 
+/** Mirrors payment-service PaymentProofResponse — a transfer screenshot uploaded against a payment. */
+export interface PaymentProofResponse {
+  imageUrl: string;
+  uploadedAt: string; // ISO
+  reviewedBy: string | null;
+  reviewedAt: string | null; // ISO
+  reviewNote: string | null;
+}
+
 export const paymentsApi = {
   /** Open (or reuse — idempotent) the active payment for a booking. Returns real bank/QR/orderCode/expiresAt. */
   initiate: (body: InitiatePaymentBody) =>
@@ -58,6 +67,10 @@ export const paymentsApi = {
 
   getById: (id: string) =>
     axiosClient.get<PaymentResponse>(`/api/payments/${id}`).then((r) => r.data),
+
+  /** Proof screenshots for a payment (newest first) — owner or STAFF/ADMIN. */
+  getProofs: (id: string) =>
+    axiosClient.get<PaymentProofResponse[]>(`/api/payments/${id}/proofs`).then((r) => r.data),
 
   /** Caller's own payments, paged. */
   listMine: (page = 0, size = 20) =>

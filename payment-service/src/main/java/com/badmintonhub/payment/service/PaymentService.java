@@ -2,12 +2,14 @@ package com.badmintonhub.payment.service;
 
 import com.badmintonhub.payment.dto.request.InitiatePaymentRequest;
 import com.badmintonhub.payment.dto.request.RefundRequest;
+import com.badmintonhub.payment.dto.response.PaymentProofResponse;
 import com.badmintonhub.payment.dto.response.PaymentResponse;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
 /** Bank-QR payment lifecycle: initiate → submit proof → STAFF confirm/reject → manual refund. */
@@ -30,6 +32,9 @@ public interface PaymentService {
 
     /** A single payment — owner or STAFF/ADMIN. */
     PaymentResponse getById(UUID id, UUID actorId, Collection<String> actorRoles);
+
+    /** The transfer-screenshot proofs for a payment, newest first — owner or STAFF/ADMIN. */
+    List<PaymentProofResponse> listProofs(UUID id, UUID actorId, Collection<String> actorRoles);
 
     /** The caller's own payment history, newest first. */
     Page<PaymentResponse> listMine(UUID userId, Pageable pageable);

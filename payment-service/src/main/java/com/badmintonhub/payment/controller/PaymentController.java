@@ -3,6 +3,7 @@ package com.badmintonhub.payment.controller;
 import com.badmintonhub.payment.dto.request.InitiatePaymentRequest;
 import com.badmintonhub.payment.dto.request.RefundRequest;
 import com.badmintonhub.payment.dto.request.RejectPaymentRequest;
+import com.badmintonhub.payment.dto.response.PaymentProofResponse;
 import com.badmintonhub.payment.dto.response.PaymentResponse;
 import com.badmintonhub.payment.service.PaymentService;
 import jakarta.validation.Valid;
@@ -26,6 +27,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -84,6 +86,13 @@ public class PaymentController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<PaymentResponse> getById(@PathVariable UUID id, Authentication auth) {
         return ResponseEntity.ok(paymentService.getById(id, UUID.fromString(auth.getName()), roles(auth)));
+    }
+
+    /** Transfer-screenshot proofs for a payment (newest first) — owner or STAFF/ADMIN. */
+    @GetMapping("/{id}/proofs")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<List<PaymentProofResponse>> proofs(@PathVariable UUID id, Authentication auth) {
+        return ResponseEntity.ok(paymentService.listProofs(id, UUID.fromString(auth.getName()), roles(auth)));
     }
 
     @GetMapping

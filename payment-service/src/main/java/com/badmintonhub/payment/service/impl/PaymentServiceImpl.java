@@ -8,6 +8,7 @@ import com.badmintonhub.payment.client.BookingServiceClient;
 import com.badmintonhub.payment.client.dto.BookingView;
 import com.badmintonhub.payment.dto.request.InitiatePaymentRequest;
 import com.badmintonhub.payment.dto.request.RefundRequest;
+import com.badmintonhub.payment.dto.response.PaymentProofResponse;
 import com.badmintonhub.payment.dto.response.PaymentResponse;
 import com.badmintonhub.payment.entity.BankAccount;
 import com.badmintonhub.payment.entity.ManualRefund;
@@ -358,6 +359,16 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<PaymentProofResponse> listProofs(UUID id, UUID actorId, Collection<String> actorRoles) {
+        Payment p = findOr404(id);
+        requireOwnerOrPrivileged(p, actorId, actorRoles);
+        return paymentProofRepository.findByPayment_IdOrderByUploadedAtDesc(id).stream()
+                .map(this::toProofResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Page<PaymentResponse> listMine(UUID userId, Pageable pageable) {
         return paymentRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable).map(this::toResponse);
     }
@@ -419,6 +430,15 @@ public class PaymentServiceImpl implements PaymentService {
                     proof.setReviewNote(note);
                     paymentProofRepository.save(proof);
                 });
+    }
+
+    private PaymentProofResponse toProofResponse(PaymentProof proof) {
+        return new PaymentProofResponse(
+                proof.getImageUrl(),
+                proof.getUploadedAt(),
+                proof.getReviewedBy(),
+                proof.getReviewedAt(),
+                proof.getReviewNote());
     }
 
     private void requireOwnerOrPrivileged(Payment p, UUID actorId, Collection<String> roles) {
