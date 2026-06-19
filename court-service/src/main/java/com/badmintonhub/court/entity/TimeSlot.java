@@ -18,6 +18,7 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.ColumnDefault;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
 import java.time.LocalDate;
@@ -49,6 +50,7 @@ public class TimeSlot extends BaseAuditEntity {
      * the ownership guard decides correctly.
      */
     @Version
+    @ColumnDefault("0")
     private long version;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
