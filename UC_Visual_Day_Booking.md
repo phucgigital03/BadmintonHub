@@ -31,7 +31,7 @@
 5. **Chuyển khoản + nộp proof** — User chuyển khoản (nội dung `#184`) rồi `POST /api/payments/{id}/proof` (ảnh). payment-service **LUÔN lưu proof** (Cloudinary + `payment_proofs`) → `PROOF_SUBMITTED`; booking nghe `payment.proof.submitted` → `hold_expires_at=null` (dừng đồng hồ tự huỷ). FE hiện "chờ STAFF duyệt".
 6. **STAFF duyệt** — STAFF mở `GET /api/payments/pending-review` (hàng chờ FIFO) → `POST /api/payments/{id}/confirm` → `payment CONFIRMED` + phát `payment.player.confirmed` → booking `PENDING→CONFIRMED` (ô giữ `RESERVED`). ✅ **Đặt sân thành công.**
 
-### 2.2 Các nhánh kết thúc khác
+### 2.2 Các nhánh kết thúc khác (Ngoại lệ)
 
 | # | Nhánh | Diễn biến | Kết cục |
 |---|---|---|---|
