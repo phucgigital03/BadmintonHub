@@ -452,7 +452,15 @@ function ProofsTab() {
   );
 }
 
-// Detail modal for a pending payment: payment summary + the uploaded transfer screenshot(s).
+// Reason codes (from booking↔payment compensations) → readable VN text for the refund queue.
+const REFUND_REASON_LABEL: Record<string, string> = {
+  PAYMENT_EXPIRED_PAID_LATE: 'Chuyển khoản trễ sau khi hết hạn',
+  BOOKING_CANCELLED: 'Đơn đã huỷ khi nộp chứng từ',
+  BOOKING_CANCELLED_BY_USER: 'Khách huỷ đơn đã thanh toán',
+};
+
+// Detail modal for a payment: summary + the uploaded transfer screenshot(s). Confirm/Reject footer only
+// renders when both handlers are passed (the pending-review tab) — the refund tab opens it read-only.
 function ProofDetailModal({
   payment,
   busy,
@@ -461,10 +469,10 @@ function ProofDetailModal({
   onReject,
 }: {
   payment: PaymentResponse | null;
-  busy: boolean;
+  busy?: boolean;
   onClose: () => void;
-  onConfirm: (id: string) => void;
-  onReject: (id: string) => void;
+  onConfirm?: (id: string) => void;
+  onReject?: (id: string) => void;
 }) {
   const q = useQuery({
     queryKey: ['payment-proofs', payment?.id],
@@ -479,7 +487,17 @@ function ProofDetailModal({
         <div className="space-y-4 text-sm text-gray-800">
           <div className="space-y-1">
             <p><span className="text-gray-500">Loại:</span> <b>{payment.paymentType}</b></p>
+            <p><span className="text-gray-500">Trạng thái:</span> <b>{paymentStatusLabel(payment.status)}</b></p>
             <p><span className="text-gray-500">Số tiền:</span> <b>{formatVnd(payment.amount)}</b></p>
+            {payment.refundRequired && (
+              <p>
+                <span className="text-gray-500">Lý do cần hoàn:</span>{' '}
+                <b>{payment.refundRequiredReason
+                  ? (REFUND_REASON_LABEL[payment.refundRequiredReason] ?? payment.refundRequiredReason)
+                  : '—'}</b>
+                {payment.refundRequiredAmount != null && <> · gợi ý hoàn <b>{formatVnd(payment.refundRequiredAmount)}</b></>}
+              </p>
+            )}
             <p><span className="text-gray-500">Thời gian:</span> {new Date(payment.createdAt).toLocaleString('vi-VN')}</p>
             <p><span className="text-gray-500">Nhận tiền:</span> {payment.bankName} · {payment.accountNumber}</p>
             {payment.bookingId && <p className="break-all text-xs text-gray-400">booking: {payment.bookingId}</p>}
@@ -513,10 +531,12 @@ function ProofDetailModal({
             )}
           </div>
 
-          <div className="flex gap-2 border-t border-gray-100 pt-3">
-            <Button fullWidth disabled={busy} onClick={() => onConfirm(payment.id)}>Xác nhận</Button>
-            <Button fullWidth variant="danger" disabled={busy} onClick={() => onReject(payment.id)}>Từ chối</Button>
-          </div>
+          {onConfirm && onReject && (
+            <div className="flex gap-2 border-t border-gray-100 pt-3">
+              <Button fullWidth disabled={busy} onClick={() => onConfirm(payment.id)}>Xác nhận</Button>
+              <Button fullWidth variant="danger" disabled={busy} onClick={() => onReject(payment.id)}>Từ chối</Button>
+            </div>
+          )}
         </div>
       )}
     </Modal>
@@ -527,6 +547,7 @@ function ProofDetailModal({
 function RefundsTab() {
   const qc = useQueryClient();
   const [target, setTarget] = useState<PaymentResponse | null>(null);
+  const [detail, setDetail] = useState<PaymentResponse | null>(null);
   const q = useQuery({
     queryKey: ['admin-refund-required'],
     queryFn: () => paymentsApi.listRefundRequired(0, 50),
@@ -561,7 +582,10 @@ function RefundsTab() {
             </p>
             {p.bookingId && <p className="break-all text-xs text-white/50">booking: {p.bookingId}</p>}
           </div>
-          <Button size="sm" onClick={() => setTarget(p)}>Hoàn tiền</Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setDetail(p)}>Xem</Button>
+            <Button size="sm" onClick={() => setTarget(p)}>Hoàn tiền</Button>
+          </div>
         </Card>
       ))}
       <RefundModal
@@ -572,6 +596,8 @@ function RefundsTab() {
           qc.invalidateQueries({ queryKey: ['admin-refund-required'] });
         }}
       />
+      {/* Read-only proof view (no confirm/reject) — STAFF eyeballs the receipt + gets the customer's account. */}
+      <ProofDetailModal payment={detail} onClose={() => setDetail(null)} />
     </div>
   );
 }

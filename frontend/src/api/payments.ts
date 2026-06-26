@@ -24,6 +24,7 @@ export interface PaymentResponse {
   createdAt: string; // ISO
   refundRequired: boolean;
   refundRequiredAmount: number | null;
+  refundRequiredReason: string | null;
 }
 
 export interface InitiatePaymentBody {

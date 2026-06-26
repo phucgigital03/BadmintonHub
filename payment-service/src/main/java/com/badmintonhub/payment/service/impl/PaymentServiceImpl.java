@@ -471,6 +471,7 @@ public class PaymentServiceImpl implements PaymentService {
                 bank.getQrImageUrl(),
                 p.getCreatedAt(),
                 p.isRefundRequired(),
-                p.getRefundRequiredAmount());
+                p.getRefundRequiredAmount(),
+                p.getRefundRequiredReason());
     }
 }
