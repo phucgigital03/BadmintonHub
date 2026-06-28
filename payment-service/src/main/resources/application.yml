@@ -17,6 +17,12 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+  servlet:
+    multipart:
+      # Bank-statement CSV import (STAFF-uploaded). Raised from the 1MB default; this also lifts the
+      # payment-proof upload ceiling to 5MB — acceptable (proof upload is authenticated; 5MB still bounds OOM).
+      max-file-size: 5MB
+      max-request-size: 5MB
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:

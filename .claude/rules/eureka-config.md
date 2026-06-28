@@ -104,7 +104,7 @@ spring:
         - id: payment-service
           uri: lb://payment-service
           predicates:
-            - Path=/api/payments/**, /api/bank-accounts/**
+            - Path=/api/payments/**, /api/bank-accounts/**, /api/bank-transactions/**
         - id: escrow-service
           uri: lb://escrow-service
           predicates:
