@@ -48,4 +48,4 @@ mvn -pl user-service spring-boot:run        # run one service
 cd frontend && npm install && npm run dev   # frontend
 ```
 
-docker-compose includes: PostgreSQL 15 ×9 · Redis 7 · MongoDB 7 · Kafka 3.6 · Zookeeper · Zipkin · Eureka
+docker-compose includes: PostgreSQL 15 ×9 · Redis 7 · MongoDB 7 ×2 (`mongodb` notification_db :27017 · `mongodb-chat` chat_db :27018) · Kafka 3.6 · Zookeeper · Zipkin · Eureka

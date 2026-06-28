@@ -28,7 +28,7 @@
 |---|---|---|
 | **Transport** | STOMP over WebSocket (`spring-boot-starter-websocket`) | Spring-native, pub/sub `/topic` + hàng đợi riêng `/user/queue` (`convertAndSendToUser`), đi qua gateway. FE dùng `@stomp/stompjs`. |
 | **Mô hình hội thoại** | **Per-staff private inbox** + hàng đợi chưa-gán chung | Thread mới ở hàng đợi chung; claim → vào **inbox riêng** 1 STAFF; sau gán **chỉ STAFF đó** (+ ADMIN giám sát) thấy. Phân-luồng-công-việc rõ ràng. |
-| **Lưu trữ** | MongoDB `chat_db` (chung instance `mongodb:27017`) | Chat = ghi nhiều, schema mềm, time-ordered. Patterns: index theo hot-path · keyset pagination · computed/extended-reference/subset — xem **§F**. |
+| **Lưu trữ** | MongoDB `chat_db` — **container RIÊNG `mongodb-chat:27018`** (tách hẳn notification-service) | DB-per-service vật lý (server riêng, không chung). Chat = ghi nhiều, schema mềm, time-ordered. Patterns: index theo hot-path · keyset pagination · computed/extended-reference/subset — xem **§F**. |
 | **Outbox** | single-document outbox (cờ `notifyStatus` trong message doc) | Mongo standalone không có multi-doc txn → ghi 1 doc là atomic; scheduler quét cờ. |
 | **Presence** | Redis `chat:online:{userId}` = **SET sessionId** (ref-count theo Session event) + TTL safety-net — nội bộ | Gate offline-notification (offline khi tập rỗng), KHÔNG phải "online indicator". Chi tiết **§G.6**. |
 | **Trạng thái tin** | 3 mốc `sent → delivered → read` | `sent`=lưu DB · `delivered`=tới thiết bị người nhận (ACK qua STOMP) · `read`=mở thread. |
@@ -558,7 +558,8 @@ Simple broker in-memory chỉ đúng với **1 instance** (như pilot booking/pa
 | `chat.message.sent.DLT` | error handler | monitor log |
 
 ### E.4 MongoDB `chat_db`
-> Index + schema-design patterns (modeling, keyset pagination, scale path): xem **§F**.
+> Kết nối: `mongodb://localhost:27018/chat_db` — **container riêng `mongodb-chat`** (KHÔNG chung server với
+> notification-service `mongodb:27017`). Index + schema-design patterns (modeling, keyset pagination, scale path): xem **§F**.
 ```
 conversations
   _id                 ObjectId/UUID

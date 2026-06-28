@@ -21,6 +21,9 @@ Each service owns exactly one database. No shared tables. No cross-database JOIN
 | coach-service | coach_db | PostgreSQL + Elasticsearch |
 | event-service | event_db | PostgreSQL |
 | notification-service | notification_db | MongoDB |
+| chat-service | chat_db | MongoDB |
+
+> **MongoDB = 2 instance tách rời** (database-per-service vật lý, không chung server): `mongodb` (notification_db · host `:27017`) + `mongodb-chat` (chat_db · host `:27018`). Mỗi service nối server riêng của mình.
 
 > **Entity model notes**: `court_db` owns `clubs` (venue · 1 CLB) → `courts` (physical *Sân*) → `time_slots`, plus `court_pricing_rules` (multi-dimensional price) and `club_reviews`. `booking_db` models an order as a **header** (`bookings`) + **N line items** (`booking_items`, one atomic 30-min slot each).
 
