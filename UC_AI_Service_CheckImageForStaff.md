@@ -39,7 +39,7 @@ Staff bấm Xem  →  [ai-service · LangGraph]
 - **FastAPI** + Uvicorn/Gunicorn
 - **LangGraph** — orchestration graph, human-in-the-loop (interrupt), checkpoint
 - **Pydantic v2** — structured output (LLM trả thẳng vào model, KHÔNG parse JSON tay) + toàn bộ DTO
-- **LLM provider qua config** — OpenAI (mặc định, theo định hướng dự án) hoặc Anthropic; chọn **model multimodal có vision** (vd dòng GPT-4o; bản nhỏ cho rẻ ở quy mô lớn). Đổi provider không sửa code lõi.
+- **LLM provider qua config (provider-agnostic)** — mặc định **Google Gemini 2.5 Flash** (multimodal vision native, free tier không cần thẻ, đọc tiếng Việt tốt, structured output). Provider + model + API key đều từ `pydantic-settings` → đổi sang OpenAI / Anthropic / Ollama (local, riêng tư) **chỉ qua `.env`, KHÔNG sửa code lõi**. Dev dùng free tier; người dùng thật bật billing Gemini (~vài cent/tháng ở quy mô pilot) để có cam kết **không-train-trên-dữ-liệu** + rate limit ổn định. (LLM chỉ trích xuất + chấm sub-score; ground truth là giao dịch ngân hàng + cổng `G` tất định + staff — nên không phụ thuộc một model "hoàn hảo".)
 - **httpx** (gọi payment-service), **SQLAlchemy + Alembic** (Postgres `ai_db` + migration), **redis-py** (cache), **Pillow + imagehash** (pHash)
 - **Observability**: LangSmith hoặc Pydantic Logfire + OpenTelemetry export sang **Zipkin** (đã có trong hệ)
 - **pydantic-settings** (config), **structlog** (log có cấu trúc)
@@ -109,7 +109,7 @@ Staff bấm Xem  →  [ai-service · LangGraph]
 ## Quy trình làm việc
 
 1. **Khảo sát codebase** + tóm tắt hiện trạng (services, payment/booking, endpoint approve/reject, nguồn giao dịch ngân hàng, nơi lưu ảnh, cách frontend gọi API).
-2. **Trình KẾ HOẠCH**: file tạo/sửa, Pydantic models, graph nodes, migration Alembic, điểm tích hợp gateway, frontend. **DỪNG xin xác nhận 3 thứ**: (1) `order_code` ngắn — dùng cái có sẵn hay sinh mới; (2) provider LLM — OpenAI hay Anthropic; (3) cách lộ qua gateway — Eureka hay route tĩnh.
+2. **Trình KẾ HOẠCH**: file tạo/sửa, Pydantic models, graph nodes, migration Alembic, điểm tích hợp gateway, frontend. **DỪNG xin xác nhận**: (1) `order_code` ngắn — dùng cái có sẵn hay sinh mới; (2) **provider LLM đã chốt: Google Gemini 2.5 Flash** (provider-agnostic, đổi qua `.env`) — chỉ cần xác nhận có `GEMINI_API_KEY` + chạy free-tier hay bật billing; (3) cách lộ qua gateway — Eureka hay route tĩnh.
 3. **Triển khai backend** (models → tools → `agent_node` → `policy_node` → graph + interrupt → endpoint → migration → config) rồi **frontend**.
 4. **Test + eval**, chạy tới khi xanh.
 
@@ -125,4 +125,4 @@ Staff bấm Xem  →  [ai-service · LangGraph]
 
 ---
 
-**Bắt đầu bằng khảo sát + kế hoạch. Chưa code tới khi mình duyệt plan. Khi hỏi, hỏi gọn đúng 3 thứ: order_code, provider, cách lộ qua gateway.**
+**Bắt đầu bằng khảo sát + kế hoạch. Chưa code tới khi mình duyệt plan. Khi hỏi, hỏi gọn: order_code và cách lộ qua gateway (provider đã chốt = Google Gemini 2.5 Flash, provider-agnostic qua `.env`).**

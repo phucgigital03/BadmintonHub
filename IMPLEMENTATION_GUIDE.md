@@ -928,11 +928,14 @@ scorecard + match level gợi ý (HIGH/MEDIUM/LOW/SUSPECT/ERROR). **Công cụ H
 Xác nhận / Từ chối.**
 
 **3 quyết định đã chốt (bake vào guide — KHÔNG hỏi lại khi implement)**:
-- **Provider LLM** = **OpenAI GPT-4o** (multimodal vision, `temperature=0`; `OPENAI_API_KEY` đã có trong config).
-  Provider qua `pydantic-settings` → đổi sau không sửa lõi.
+- **Provider LLM (provider-agnostic)** = mặc định **Google Gemini 2.5 Flash** (multimodal vision native,
+  `temperature=0`, free tier không cần thẻ, đọc tiếng Việt tốt, structured output; `GEMINI_API_KEY`).
+  Provider + model + key đều từ `pydantic-settings` → đổi sang OpenAI / Anthropic / Ollama (local, riêng tư)
+  **chỉ qua `.env`, KHÔNG sửa code lõi**. Dev chạy free tier; người dùng thật bật billing Gemini
+  (~vài cent/tháng ở quy mô pilot) để có cam kết **không-train-trên-dữ-liệu** + rate limit ổn định.
 - **Ngôn ngữ + gateway** = **Python (FastAPI/LangGraph)**, rewrite scaffold Java; **đăng ký Eureka qua
   `py-eureka-client`** để giữ route `lb://ai-service` hiện có (KHÔNG đổi gateway). → Hệ quả: **gỡ `ai-service`
-  khỏi `<modules>` root `pom.xml`** (không còn build bằng Maven); thêm Postgres `ai_db` vào `docker-compose.yml`.
+  khỏi `<modules>` root `pom.xml`** (không còn build bằng Maven). Postgres `ai_db` (`postgres-ai`) **đã có sẵn trong `docker-compose.yml` từ commit base** — KHÔNG cần thêm.
 - **Nguồn ground-truth ngân hàng** = **import sao kê VCB thủ công** (bước đầu): STAFF upload file sao kê VCB
   (CSV/Excel) → parser **dedupe theo mã giao dịch** → bulk insert bảng **`bank_transactions`**. Tool
   `lookup_bank_transaction` **LUÔN query bảng này**. Ingestion **tách riêng + pluggable** (`BankStatementParser`)
@@ -949,7 +952,7 @@ Xác nhận / Từ chối.**
 ```
 Đọc trước: UC_AI_Service_CheckImageForStaff.md (SPEC ĐẦY ĐỦ — tuân thủ kỷ luật phạm vi: đúng 1 agent),
 .claude/rules/payment.md, .claude/rules/eureka-config.md, .claude/rules/rbac-security.md, .claude/rules/redis-patterns.md.
-Quyết định đã chốt (KHÔNG hỏi lại): OpenAI GPT-4o · Python FastAPI/LangGraph + py-eureka-client (giữ lb://ai-service)
+Quyết định đã chốt (KHÔNG hỏi lại): LLM provider-agnostic, mặc định Google Gemini 2.5 Flash (đổi qua .env) · Python FastAPI/LangGraph + py-eureka-client (giữ lb://ai-service)
 · nguồn bank = import sao kê VCB thủ công vào bảng bank_transactions (pluggable, extension point SePay).
 
 PHẦN A — payment-service (Java): nguồn giao dịch ngân hàng
@@ -964,7 +967,7 @@ PHẦN A — payment-service (Java): nguồn giao dịch ngân hàng
 - Extension point SePay: enum source + interface ingestion để webhook SePay sau ghi CÙNG bảng (cùng dedupe bank_ref).
 
 PHẦN B — ai-service (Python rewrite, port 3010):
-- Gỡ ai-service khỏi <modules> root pom; thêm postgres ai_db vào docker-compose.
+- Gỡ ai-service khỏi <modules> root pom (ai_db đã sẵn trong docker-compose từ base — KHÔNG cần thêm).
 - Stack: FastAPI + Uvicorn · LangGraph (graph + human-in-the-loop interrupt + checkpoint) · Pydantic v2
   (structured output, KHÔNG parse JSON tay) · SQLAlchemy + Alembic (ai_db: verification_log + pHash store) ·
   redis-py (cache verify) · Pillow + imagehash (pHash) · httpx (gọi payment-service) · pydantic-settings ·
@@ -974,7 +977,7 @@ PHẦN B — ai-service (Python rewrite, port 3010):
   FieldLocation(region/description/bbox 0..1 nullable), BankTransaction.
 - 2 tool (HÀM THƯỜNG, không agent): lookup_bank_transaction(order_code, amount) -> httpx GET payment-service
   /api/bank-transactions/lookup; check_image_reuse(phash) -> tra pHash store trong ai_db.
-- Graph nodes: agent_node (GPT-4o vision, temp=0: đọc ảnh native -> extract + field_locations + scorecard,
+- Graph nodes: agent_node (Gemini 2.5 Flash vision, temp=0: đọc ảnh native -> extract + field_locations + scorecard,
   được trang bị 2 tool) -> policy_node (CODE tất định: cổng cứng G + gộp điểm -> match level; HIGH BẮT BUỘC G=true;
   lỗi/timeout/ảnh hỏng -> ERROR -> thủ công) -> human_review (interrupt, trả VerificationResult cho UI)
   -> finalize_node (chỉ chạy SAU quyết định người).
