@@ -132,7 +132,7 @@ Sau khi setup: hỏi "Check booking table có PENDING record nào > 10 phút kh�
 > (Python FastAPI/LangGraph) — đã được kéo lên làm **trước Day 10 + Week 3**. Xem **Day 10.5** (cuối Week 2).
 > Thay cho "ai stub" cũ ở Day 20.
 > 💬 **Chat hỗ trợ real-time** STAFF↔Khách (STOMP · `chat-service` Java port 3011) = **Day 10.6** (ngay sau Day 10.5,
-> cuối Week 2) — spec `UC_Chatting.md`, build theo 6 phase paste-ready.
+> cuối Week 2) — spec `UC_Chatting.md`, build theo 5 phase paste-ready.
 
 ---
 
@@ -1017,19 +1017,21 @@ VCB dedupe đúng theo `bank_ref` · secrets không trong source · test + eval 
 **Mục tiêu**: Kênh chat hỗ trợ real-time giữa **Khách** (USER/COACH) và **Nhân viên** (STAFF). Khách mở 1 luồng →
 vào **hàng đợi chưa-gán chung**; STAFF **claim** về **inbox riêng** → chỉ STAFF đó (+ ADMIN giám sát) xử lý. Tin
 đẩy tức thì qua **STOMP over WebSocket**, trạng thái **`sent → delivered → read`** + typing, **gửi ảnh**
-(Cloudinary), **thông báo offline** qua Kafka → notification-service (email/FCM). Lưu MongoDB `chat_db`.
+(Cloudinary). Lưu MongoDB `chat_db`.
 
 **Quyết định đã chốt (bake vào guide — KHÔNG hỏi lại khi implement)**:
 - **Transport = STOMP over WebSocket** (`spring-boot-starter-websocket`), FE `@stomp/stompjs` — **KHÔNG socket.io**
   (socket.io giữ cho matchmaking). Per-user queue `convertAndSendToUser` + `setUserDestinationPrefix("/user")`.
+- **Broker = RabbitMQ STOMP relay** (`enableStompBrokerRelay("/topic","/queue")`, plugin `rabbitmq_stomp` :61613) →
+  **N instance** chat-service, fan-out cross-instance qua `setUserRegistryBroadcast`, **KHÔNG cần sticky**. Swap broker
+  ~2 dòng config — code STOMP/business GIỮ NGUYÊN. Ổn ~chục nghìn conn; vượt → tầng connection riêng (§D.11).
 - **Mô hình = per-staff private inbox** + hàng đợi chưa-gán chung (OPEN→claim→ASSIGNED→CLOSED, reopen giữ
   `assignedStaffId`, ADMIN xem tất cả). **3-state delivery** suy từ timestamp (`createdAt`/`deliveredAt`/`readAt`).
-- **Lưu trữ = MongoDB `chat_db`** — **container RIÊNG `mongodb-chat:27018`** (DB-per-service vật lý, đã pre-provision trong docker-compose; tách hẳn notification-service) · **single-document Outbox**
-  (`notifyStatus` trong message doc — Mongo standalone không multi-doc txn) · index/keyset/computed theo **§F**.
+- **Lưu trữ = MongoDB `chat_db`** — **container RIÊNG `mongodb-chat:27018`** (DB-per-service vật lý, đã pre-provision trong docker-compose; tách hẳn notification-service) · index/keyset/computed theo **§F**.
 - **Bảo mật/vận hành = bake §G**: auth ở **STOMP CONNECT frame** (gateway `/ws/**` public) · **authz per-frame**
   (SUBSCRIBE `/topic/staff.queue` STAFF-only · SEND participant-check) · token-15' → reconnect · validation ≤2000
   + escape-on-render · rate-limit · ảnh **MIME allowlist + ≤5MB** · **keyset pagination** · **unique sparse
-  `activeCustomerId`** (1 thread mở/khách) · presence **ref-count** (offline khi tập session rỗng).
+  `activeCustomerId`** (1 thread mở/khách).
 
 **Tiền đề đã xác minh (tái dùng — KHÔNG làm lại)**:
 - `common-security` **`JwtUtil`** (`com.badmintonhub.security`: `parseAndValidate`/`getUserId`/`getRoles`/`getJti`)
@@ -1039,20 +1041,19 @@ vào **hàng đợi chưa-gán chung**; STAFF **claim** về **inbox riêng** �
 - **payment-service `CloudinaryService`/`CloudinaryServiceImpl`/`CloudinaryProdGuard`** = mẫu upload ảnh (degrade
   `local-fallback://` dev · chặn boot prod). **Container `mongodb-chat` (port 27018) đã có sẵn trong docker-compose** — KHÔNG dùng chung server với notification-service.
 
-> ⚠️ **Phụ thuộc**: PHASE 4 (offline-notify) cần **notification-service (Day 13)**. Nếu chưa build: **vẫn làm
-> producer side** (chat outbox → Kafka) ngay; **consumer side để lại** tới Day 13 — tin KHÔNG mất, chỉ chậm
-> email/FCM. PHASE 1–3 (chat real-time) + PHASE 5 (FE) chạy độc lập không cần notification-service.
+> ✅ **Độc lập**: chat-service KHÔNG phụ thuộc notification-service (đã GỠ thông báo offline) — build chạy được
+> mà không cần Day 13. Người nhận offline → tin vẫn lưu DB, nhận lại khi reconnect (history-sync §G.6).
 
 ---
 
 **PHASE 0 — Nạp ngữ cảnh (làm 1 lần đầu session)**
 ```
-Đọc trước (đọc kỹ, KHÔNG bỏ qua): UC_Chatting.md (SPEC ĐẦY ĐỦ — 5 UC + Phụ lục A→G),
+Đọc trước (đọc kỹ, KHÔNG bỏ qua): UC_Chatting.md (SPEC ĐẦY ĐỦ — 4 UC + Phụ lục A→G),
 .claude/rules/architecture.md, .claude/rules/eureka-config.md, .claude/rules/rbac-security.md,
-.claude/rules/kafka-patterns.md, .claude/rules/redis-patterns.md, .claude/rules/database.md,
+.claude/rules/redis-patterns.md, .claude/rules/database.md,
 .claude/rules/java-spring.md, .claude/rules/testing.md, .claude/rules/frontend.md.
 
-Tôi sẽ build chat-service theo 6 phase (PHASE 1→6 ở dưới), backend-first. TRƯỚC MỖI PHASE: chạy plan mode,
+Tôi sẽ build chat-service theo 5 phase (PHASE 1→5 ở dưới), backend-first. TRƯỚC MỖI PHASE: chạy plan mode,
 khảo sát code thật, rồi mới code. Quyết định kiến trúc đã CHỐT trong UC_Chatting.md §0.2 + §G — KHÔNG hỏi lại,
 KHÔNG đổi sang socket.io, KHÔNG bỏ qua phần bảo mật §G. Mỗi phase xong: mvn verify xanh rồi commit (KHÔNG
 Co-Authored-By trailer), rồi sang phase sau.
@@ -1063,11 +1064,13 @@ Co-Authored-By trailer), rồi sang phase sau.
 Chạy /new-service chat-service (port 3011) rồi điều chỉnh theo chat:
 - Stack: Spring Web + spring-boot-starter-websocket + spring-boot-starter-data-mongodb +
   spring-boot-starter-security + common-security + common + common-test(test) + eureka-client +
-  spring-kafka + spring-boot-starter-data-redis. KHÔNG JPA → application.yml exclude
+  spring-boot-starter-data-redis (rate-limit) + reactor-netty (TCP client cho RabbitMQ STOMP relay, §D.11).
+  KHÔNG JPA · KHÔNG Kafka → application.yml exclude
   DataSourceAutoConfiguration + HibernateJpaAutoConfiguration + DataSourceTransactionManagerAutoConfiguration
   (mirror notification-service).
 - application.yml: server.port=3011 · spring.application.name=chat-service ·
   spring.data.mongodb.uri=${MONGODB_URI:mongodb://localhost:27018/chat_db} (container RIÊNG mongodb-chat:27018, KHÔNG dùng :27017 của notification-service) · Eureka client (mirror eureka-config.md)
+  · RABBITMQ_HOST · RABBITMQ_STOMP_PORT:61613 · RABBITMQ_USER · RABBITMQ_PASS (relay broker — §D.11/§E.6)
   · management.endpoints health,info. Secrets/infra theo pattern ${VAR:default}.
 - Security: SecurityConfig + JwtAuthFilter (OncePerRequestFilter) re-validate Bearer qua common-security JwtUtil
   (principal=userId, authorities từ roles claim) — KHÔNG tin X-User-* header. permitAll /actuator/health + /ws/**;
@@ -1077,6 +1080,8 @@ Chạy /new-service chat-service (port 3011) rồi điều chỉnh theo chat:
   (2) id=chat-ws uri=lb://chat-service Path=/ws/** . Và THÊM /ws/** vào PUBLIC_PATHS của JwtAuthenticationFilter
   (gateway KHÔNG verify được WS handshake — auth dồn về STOMP CONNECT frame, §G.1).
 - Cập nhật bảng port: thêm "chat-service | 3011" vào .claude/rules/architecture.md + .claude/rules/eureka-config.md.
+- Infra: docker-compose thêm service rabbitmq (rabbitmq:3-management + BẬT plugin rabbitmq_stomp · ports 5672/61613/15672)
+  cho STOMP relay (§E.6). (Broker config cắm ở PHASE 3.)
 Verify: mvn -pl chat-service spring-boot:run → đăng ký Eureka UP, GET /actuator/health = 200. Tắt service sau verify.
 ```
 
@@ -1084,9 +1089,9 @@ Verify: mvn -pl chat-service spring-boot:run → đăng ký Eureka UP, GET /actu
 ```
 Đọc lại UC_Chatting.md §E.1 (REST), §E.4 (schema), §F (index/keyset/patterns), §G.3/G.5/G.7. Plan mode trước.
 - @Document conversations + messages đúng §E.4 (enum status OPEN/ASSIGNED/CLOSED · type TEXT/IMAGE ·
-  notifyStatus NONE/PENDING/SENT · notifyTarget · snapshot customerName/senderName · counters customerUnread/
+  snapshot customerName/senderName · counters customerUnread/
   staffUnread · activeCustomerId · archivedAt). Index theo §F.2 qua @CompoundIndex / MongoIndexInitializer:
-  messages {conversationId:1,_id:-1} · UNIQUE {conversationId:1,senderId:1,clientMsgId:1} · partial {notifyStatus:1}
+  messages {conversationId:1,_id:-1} · UNIQUE {conversationId:1,senderId:1,clientMsgId:1}
   ; conversations {assignedStaffId:1,status:1,lastMessageAt:-1} · partial hàng-đợi · {customerId:1,status:1} ·
   UNIQUE SPARSE {activeCustomerId:1} (chốt 1 thread mở/khách, chống race 2 lần bấm "Hỗ trợ").
 - Repository: phân trang lịch sử tin bằng KEYSET (find _id<cursor sort _id:-1 limit N — §F.4), KHÔNG skip.
@@ -1108,15 +1113,18 @@ ensure-open idempotent, claim race 409, keyset pagination, dedupe clientMsgId, v
 ```
 Đọc lại UC_Chatting.md §C, §D.1/2/3/8, §E.2 (STOMP destinations), §G.1/G.2/G.6. Plan mode trước.
 - WebSocketConfig (@EnableWebSocketMessageBroker): registerStompEndpoints("/ws").setAllowedOrigins(${FRONTEND_URL})
-  ; enableSimpleBroker("/topic","/user") · setApplicationDestinationPrefixes("/app") · setUserDestinationPrefix("/user")
+  ; **enableStompBrokerRelay("/topic","/queue")** trỏ RabbitMQ (setRelayHost ${RABBITMQ_HOST} · setRelayPort 61613 ·
+  setSystemLogin/setSystemPasscode + setClientLogin/setClientPasscode · setUserRegistryBroadcast("/topic/simp-user-registry")
+  + setUserDestinationBroadcast("/topic/unresolved-user-destination") → fan-out CROSS-INSTANCE, §D.11) ·
+  setApplicationDestinationPrefixes("/app") · setUserDestinationPrefix("/user")
   ; giới hạn message-size (setMessageSizeLimit/setSendBufferSizeLimit — chống frame khổng lồ, §G.1).
+  ⚠️ Broker prefix là /topic+/queue (KHÔNG /topic+/user); local dev có thể enableSimpleBroker qua profile.
+  Phần CONNECT-auth / per-frame authz / @MessageMapping / convertAndSendToUser **KHÔNG đổi** khi swap broker.
 - StompAuthChannelInterceptor (configureClientInboundChannel): bắt CONNECT → đọc nativeHeader Authorization →
   JwtUtil.parseAndValidate → accessor.setUser(Principal=userId) (token hỏng/hết hạn → ERROR frame). AUTHZ PER-FRAME:
   SUBSCRIBE /topic/staff.queue chỉ STAFF/ADMIN (non-STAFF → reject) · SEND /app/conv.{id}.* chỉ participant của
   conversationId (customerId hoặc assignedStaffId — chống spoof delivered/typing). Token mid-session (§G.2):
   đọc exp lúc CONNECT → lên lịch đóng session ở exp.
-- Presence ref-count (§G.6): @EventListener SessionConnectedEvent → SADD chat:online:{userId} {sessionId} + EXPIRE
-  safety-net; SessionDisconnectEvent → SREM (offline khi tập rỗng). KHÔNG phải online-indicator — chỉ gate offline-notify.
 - Wire REST → WS push: sau khi persist tin (PHASE 2), service gọi simpMessagingTemplate.convertAndSendToUser(
   recipientId, "/queue/messages", dto) tới người nhận đích danh (assignedStaffId/customerId); thread chưa gán →
   broadcast tóm tắt /topic/staff.queue; cập nhật /user/queue/inbox cho STAFF được gán.
@@ -1127,22 +1135,7 @@ Test: IT (Testcontainers Mongo+Redis) — CONNECT thiếu/sai token → reject; 
 SEND delivered cho thread không thuộc về mình → từ chối; send → người nhận nhận qua /user/queue/messages. mvn verify xanh.
 ```
 
-**PHASE 4 — Thông báo offline (Outbox + Kafka → notification-service)** — *UC-CHAT-05 · §G.8 · rule #4/#5/#7*
-```
-Đọc lại UC_Chatting.md UC-CHAT-05, §E.3 (Kafka), §G.8 + kafka-patterns.md. Plan mode trước.
-- chat-service (PRODUCER — làm ngay): khi gửi tin mà người nhận KHÔNG ở chat:online → set notifyStatus=PENDING +
-  notifyTarget (STAFF_ASSIGNED/STAFF_GROUP/CUSTOMER) NGAY TRONG message doc (single-doc outbox, atomic).
-  ChatOutboxScheduler @Scheduled(3s): quét message notifyStatus=PENDING → kafkaTemplate.send("chat.message.sent",
-  payload) → set SENT. KafkaConsumerConfig + DefaultErrorHandler + DLT chat.message.sent.DLT (backoff 2/4/8s ×3) +
-  ChatDeadLetterMonitor (mirror SlotDeadLetterMonitor: log [DLT] + counter tag topic, KHÔNG auto-reprocess).
-- notification-service (CONSUMER): NẾU notification-service đã build (Day 13) → thêm @KafkaListener("chat.message.sent",
-  containerFactory="manualAckListenerContainerFactory") idempotency theo messageId (Mongo dedupe) → gửi email/FCM
-  "Bạn có tin nhắn hỗ trợ mới" → ack. NẾU CHƯA build → BỎ QUA consumer phase này (ghi TODO), tin vẫn an toàn ở
-  Kafka/DB, chỉ chậm notify; làm consumer khi tới Day 13.
-Test: IT — gửi tin khi recipient offline → message PENDING → scheduler publish chat.message.sent → SENT. mvn verify xanh.
-```
-
-**PHASE 5 — Frontend (`@stomp/stompjs`)** — *UC-CHAT-01..04 FE · §G.2/G.3*
+**PHASE 4 — Frontend (`@stomp/stompjs`)** — *UC-CHAT-01..04 FE · §G.2/G.3*
 ```
 Đọc lại UC_Chatting.md §E.1/§E.2 + .claude/rules/frontend.md. Plan mode trước. Cài @stomp/stompjs (GIỮ socket.io cho match).
 - stompClient.ts: kết nối wss qua gateway /ws với connectHeaders Authorization=Bearer; bắt CLOSE/ERROR →
@@ -1158,25 +1151,25 @@ Test: IT — gửi tin khi recipient offline → message PENDING → scheduler p
 Verify: npm run build xanh; click-test khách↔STAFF gửi/nhận tức thì, 3-state, ảnh, claim/transfer/release, offline reconnect.
 ```
 
-**PHASE 6 — Test tổng + go-live checklist (§G.10)**
+**PHASE 5 — Test tổng + go-live checklist (§G.10)**
 ```
 Đọc lại UC_Chatting.md §G.10. Bổ sung test còn thiếu + chạy checklist:
 - Unit: dedupe clientMsgId · validation ≤2000/blank · claim race 409 · authz (USER không thấy thread STAFF khác;
-  participant-check). IT (Testcontainers Mongo+Redis+Kafka): send→persist→push · keyset pagination · offline→outbox→
-  chat.message.sent · WS CONNECT thiếu/sai token reject · SUBSCRIBE /topic/staff.queue bởi USER → 403 ·
+  participant-check). IT (Testcontainers Mongo+Redis): send→persist→push · keyset pagination ·
+  WS CONNECT thiếu/sai token reject · SUBSCRIBE /topic/staff.queue bởi USER → 403 ·
   SEND delivered spoof → reject · 1 conversation mở/khách (unique sparse) chống tạo trùng.
 - Go-live checklist §G.10: CONNECT-frame auth + per-frame authz bật · rate_limit:chat enforce · MIME+≤5MB ảnh ·
-  1 instance + alert log [DLT] + ChatDeadLetterMonitor · CLOUDINARY_* (prod guard) · origin=FRONTEND_URL ·
-  reconcile-unread + presence ref-count chạy.
+  RabbitMQ STOMP plugin up + relay config + ≥2 instance (no sticky) + alert log ERROR · CLOUDINARY_* (prod guard) · origin=FRONTEND_URL ·
+  reconcile-unread chạy.
 mvn -pl chat-service verify xanh. Tắt mọi service Claude bật ngầm; user tự run để kiểm tra tay.
 ```
 
-**Định nghĩa Done**: 5 UC chạy e2e qua FE · **per-staff inbox đúng** (STAFF khác KHÔNG thấy thread đã gán · USER
+**Định nghĩa Done**: 4 UC chạy e2e qua FE · **per-staff inbox đúng** (STAFF khác KHÔNG thấy thread đã gán · USER
 KHÔNG subscribe được `/topic/staff.queue` · SEND spoof bị chặn) · 3-state `sent→delivered→read` hiển thị + typing ·
-gửi ảnh **MIME allowlist + ≤5MB** · offline → email/FCM (khi có notification-service) · **keyset pagination** lịch sử ·
-**1 conversation mở/khách** (unique sparse `activeCustomerId`) · presence ref-count (multi-device) · `mvn verify` xanh ·
-trước pilot pass **checklist §G.10**. chat-service là service Java mới (đã vào root pom) · **1 instance** (simple
-broker in-memory — multi-instance cần relay, §D.11/§G.8).
+gửi ảnh **MIME allowlist + ≤5MB** · **keyset pagination** lịch sử ·
+**1 conversation mở/khách** (unique sparse `activeCustomerId`) · multi-device fan-out (`convertAndSendToUser`) · `mvn verify` xanh ·
+trước pilot pass **checklist §G.10**. chat-service là service Java mới (đã vào root pom) · **≥2 instance** + **RabbitMQ
+STOMP relay** (broker dùng chung, fan-out cross-instance, KHÔNG cần sticky — §D.11/§G.8).
 
 ---
 

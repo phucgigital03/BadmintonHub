@@ -88,3 +88,25 @@ flowchart LR
     PX --> C["court-service<br/>2 partition đọc SONG SONG<br/>không có thứ tự chéo partition"]
     PY --> C
 ```
+
+Sơ đồ chatting 
+```mermaid
+graph TD
+    FE["FE React + @stomp/stompjs · WS /ws · REST /api/chat"]
+    GW["api-gateway :3000 · /ws public · lb://chat-service"]
+    C1["chat-service #1 :3011 · STOMP · CONNECT auth · REST persist"]
+    C2["chat-service #2 :3011 · STOMP · CONNECT auth · REST persist"]
+    MQ["RabbitMQ STOMP relay · rabbitmq_stomp :61613 · /topic /queue · user-registry broadcast"]
+    MG[("MongoDB chat_db · mongodb-chat :27018 · nguồn sự thật")]
+    RD[("Redis · CHỈ rate-limit")]
+    FE --> GW
+    GW --> C1
+    GW --> C2
+    C1 <--> MQ
+    C2 <--> MQ
+    C1 --> MG
+    C2 --> MG
+    C1 -.-> RD
+    C2 -.-> RD
+```
+

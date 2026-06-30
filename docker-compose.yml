@@ -301,6 +301,29 @@ services:
       - "8080:8080"
     restart: unless-stopped
 
+  # ── RabbitMQ (STOMP relay broker cho chat-service) ────────────────────────
+  # Bật plugin rabbitmq_stomp (cổng 61613) cho enableStompBrokerRelay (UC_Chatting §D.11/§E.6).
+  # User KHÔNG phải guest (guest chỉ connect từ localhost → cross-container bị chặn). Management UI :15672.
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    command: bash -c "rabbitmq-plugins enable --offline rabbitmq_stomp; rabbitmq-server"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-badminton}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-badminton}
+    ports:
+      - "5672:5672"     # AMQP
+      - "61613:61613"   # STOMP (relay chat-service)
+      - "15672:15672"   # Management UI
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
   # ── Elasticsearch ─────────────────────────────────────────────────────────
 
   elasticsearch:
@@ -340,4 +363,5 @@ volumes:
   zookeeper-data:
   zookeeper-logs:
   kafka-data:
+  rabbitmq-data:
   elasticsearch-data:
