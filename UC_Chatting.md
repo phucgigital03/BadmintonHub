@@ -51,49 +51,6 @@
 > **§G.1**, Mongo schema/index **§F**, Redis **§E.5**. (Khác sơ đồ pub/sub-Redis thường thấy: vai "bus"
 > ở đây là **RabbitMQ STOMP relay**; Redis CHỈ làm rate-limit.)
 
-```
-                          ┌──────────────────────────────┐
-            WS  +  REST    │   FE  (React + @stomp/stompjs) │
-          ┌────────────────│   /ws (WebSocket) · /api/chat │
-          │                └──────────────────────────────┘
-          ▼
-   ┌─────────────────────────────────────────────────┐
-   │   api-gateway :3000   (Load balancer)            │
-   │   /ws/**     → PUBLIC (auth ở CONNECT frame)     │
-   │   /api/chat/** → lb://chat-service               │
-   └───────────────┬─────────────────┬───────────────┘
-        WS pin      │                 │   WS pin
-      (1 socket =   ▼                 ▼   1 instance)
-     ┌────────────────────┐   ┌────────────────────┐
-     │ chat-service #1     │   │ chat-service #2     │   … #N
-     │ :3011  (STOMP)      │   │ :3011  (STOMP)      │
-     │ • CONNECT auth      │   │ • CONNECT auth      │
-     │ • per-frame authz   │   │ • per-frame authz   │
-     │ • REST persist      │   │ • REST persist      │
-     │ • convertAndSend…   │   │ • convertAndSend…   │
-     └───┬──────────┬──────┘   └────┬──────────┬─────┘
-         │          │               │          │
-         │          └──────┬────────┘          │
-         │                 ▼                    │
-         │     ┌──────────────────────────────┐│
-         │     │  RabbitMQ STOMP relay         ││  ◄── vai "bus" (KHÔNG phải Redis)
-         │     │  plugin rabbitmq_stomp :61613 ││
-         │     │  /topic  +  /queue            ││
-         │     │  user-registry broadcast      ││  (định tuyến convertAndSendToUser
-         │     └──────────────────────────────┘│   cross-instance · KHÔNG cần sticky)
-         │                                      │
-         ▼                                      ▼
-     ┌──────────────────────────────────────────────┐
-     │  MongoDB chat_db   (mongodb-chat :27018)      │  ◄── nguồn sự thật, dùng chung
-     │  conversations · messages  (keyset page)      │
-     └──────────────────────────────────────────────┘
-
-   Phụ trợ (KHÔNG nằm trên đường fan-out real-time):
-     • Redis   → CHỈ rate-limit gửi tin/ảnh (§E.5)
-     • Eureka  → lb://chat-service (gateway discovery)
-     • Cloudinary → upload ảnh trong tin nhắn (§G.4)
-```
-
 ```mermaid
 graph TD
     FE["FE React + @stomp/stompjs · WS /ws · REST /api/chat"]
@@ -173,7 +130,9 @@ kéo lại lịch sử từ Mongo (§G.6 · §D.11).
 | 3 | Không STAFF nào online | broadcast hàng đợi không ai nghe | thread vẫn nằm DB (`OPEN` chưa gán); STAFF thấy + nhặt khi mở tab "Hỗ trợ" / online lại |
 
 ### Quy tắc
-- **1 thread mở / khách** (`ensureOpenConversation` idempotent) — chốt DB-level bằng **unique sparse `activeCustomerId`** (§F.2) chống race 2 lần bấm "Hỗ trợ".
+- **1 thread mở / khách** (`ensureOpenConversation` idempotent) — chốt DB-level bằng **partial unique index**
+  trên `customerId` (`status ∈ {OPEN,ASSIGNED}`, §F.2) chống race 2 lần bấm "Hỗ trợ". Race lọt qua check ở
+  service → `DuplicateKeyException` → **bắt · re-read · trả thread đang mở** (200 idempotent, KHÔNG 500 — §C).
 - Thread mới **luôn chưa gán** (`assignedStaffId=null`) → phải qua claim mới có chủ.
 - Mở thread **chưa** sinh tin → chỉ hiện ở **Hàng đợi chưa gán** của STAFF online, chưa vào inbox riêng ai.
 
@@ -185,6 +144,7 @@ sequenceDiagram
     participant GW as api-gateway
     participant CH as chat-service
     participant DB as MongoDB
+    participant MQ as RabbitMQ relay
     actor S as STAFF (online)
 
     C->>FE: bấm "Hỗ trợ" (booking / chi tiết sân)
@@ -192,7 +152,8 @@ sequenceDiagram
     GW->>CH: forward (đã verify JWT)
     CH->>DB: findOpenByCustomerId or INSERT conversation(OPEN · assignedStaffId=null)
     CH-->>FE: ConversationResponse {id · status=OPEN · chưa gán}
-    CH->>S: broadcast /topic/staff.queue (thread mới vào hàng đợi)
+    CH->>MQ: broadcast /topic/staff.queue (thread mới)
+    MQ->>S: fan-out STAFF online (mọi instance)
 ```
 
 ---
@@ -233,7 +194,7 @@ sequenceDiagram
 |---|---|---|---|
 | 1 | WS rớt kết nối | mạng chập chờn → STOMP disconnect | `@stomp/stompjs` auto-reconnect; tin tới lúc rớt vẫn lưu DB. Khi reconnect: **history-sync** (GET messages keyset) + **ACK delivered bù** tin chưa ACK (§G.6) |
 | 2 | Token hết hạn lúc CONNECT | JWT expired ở interceptor | CONNECT bị từ chối (ERROR frame) → FE silent-refresh token rồi reconnect |
-| 3 | Tin trùng do retry | client gửi lại cùng `clientMsgId` | dedupe → trả tin cũ, không tạo 2 bản (idempotent send) |
+| 3 | Tin trùng do retry | client gửi lại cùng `clientMsgId` | dedupe (`DuplicateKeyException` trên unique `clientMsgId` → **bắt · re-read · trả tin cũ**) → không tạo 2 bản, **200 idempotent** (§C) |
 | 4 | Khách gửi khi thread chưa gán | chưa STAFF nào claim | tin vẫn lưu (sent), nằm hàng đợi; chỉ delivered/read khi đã có STAFF gán mở thread |
 | 5 | Token hết hạn **giữa phiên** (socket sống >15') | access TTL 15' < đời socket | server lên lịch **đóng session ở `exp`**; client bắt CLOSE → silent-refresh `/api/auth/refresh` → reconnect token mới (**§G.2**) |
 | 6 | SEND-frame **giả mạo** | client ACK `delivered`/`typing` cho thread KHÔNG thuộc về mình | interceptor authz per-frame: principal phải là participant → **reject** (**§G.1**) |
@@ -252,19 +213,24 @@ sequenceDiagram
     actor A as Người gửi
     participant CH as chat-service
     participant DB as MongoDB
+    participant MQ as RabbitMQ relay
     actor B as Người nhận (STAFF được gán / khách)
 
     A->>CH: POST /messages {clientMsgId · content}
     CH->>DB: dedupe clientMsgId · INSERT message (sent)
-    CH->>B: convertAndSendToUser(B · /queue/messages)
-    B->>CH: SEND /app/conv.{id}.delivered {messageId}
+    CH->>MQ: convertAndSendToUser(B · /queue/messages)
+    MQ->>B: deliver (instance giữ socket B · cross-instance)
+    B->>CH: SEND /app/conv.{id}.delivered {messageId} (KHÔNG qua broker)
     CH->>DB: set deliveredAt (delivered)
-    CH->>A: /user/queue/delivery ("đã nhận")
-    B->>CH: PATCH /read (mở thread)
+    CH->>MQ: /user/queue/delivery
+    MQ->>A: "đã nhận"
+    B->>CH: PATCH /read (mở thread · REST)
     CH->>DB: set readAt (read)
-    CH->>A: /user/queue/read ("đã xem")
-    A->>CH: SEND /app/conv.{id}.typing
-    CH->>B: /user/queue/typing
+    CH->>MQ: /user/queue/read
+    MQ->>A: "đã xem"
+    A->>CH: SEND /app/conv.{id}.typing (KHÔNG qua broker)
+    CH->>MQ: /user/queue/typing
+    MQ->>B: đối phương đang gõ
 ```
 
 ---
@@ -293,12 +259,14 @@ sequenceDiagram
    của các thread được gán cho mình.
 6. Xong → `POST /api/chat/conversations/{id}/close` → `status=CLOSED`.
 7. Khách gửi tin mới vào thread đã CLOSED → service **reopen** (`CLOSED→ASSIGNED`, **giữ `assignedStaffId` cũ**)
-   → bơm vào inbox riêng của đúng STAFF cũ (tiếp nối liền mạch).
+   → bơm vào inbox riêng của đúng STAFF cũ (tiếp nối liền mạch). **Chỉ reopen khi khách KHÔNG có thread active
+   nào khác** (invariant 1-thread-mở/khách); nếu khách đã mở thread active mới hơn → định tuyến tin vào **thread
+   active hiện tại**, KHÔNG reopen thread CLOSED (nếu cố reopen sẽ đụng partial-unique §F.2 → 409).
 
 ### Nhánh ngoại lệ
 | # | Nhánh | Diễn biến | Kết cục |
 |---|---|---|---|
-| 1 | 2 STAFF cùng claim | đua claim 1 thread chưa gán | guard `assignedStaffId=null` → chỉ 1 thắng (`OPEN→ASSIGNED`); người sau thấy đã gán → **409** |
+| 1 | 2 STAFF cùng claim | đua claim 1 thread chưa gán | **atomic `findAndModify`** filter `{status:OPEN, assignedStaffId:null}` → chỉ 1 thắng (`modifiedCount==1`, `OPEN→ASSIGNED`); người sau `modifiedCount==0` → **409** (§C — atomic transition, KHÔNG find-check-save) |
 | 2 | STAFF khác mở thread đã gán | không phải `assignedStaffId` của thread | authz → **403** (chỉ STAFF được gán + ADMIN xem được) |
 | 3 | Người lạ (khách khác) mở thread | không phải `customerId` | **403 FORBIDDEN** |
 | 4 | STAFF được gán offline khi có tin | không nghe `/user/queue/inbox` | tin vẫn lưu DB; STAFF mở lại tab "Hỗ trợ" thấy đủ (history-sync) |
@@ -306,7 +274,8 @@ sequenceDiagram
 ### Quy tắc
 - **Per-staff private inbox**: sau claim, thread thuộc về **đúng 1 STAFF**; STAFF khác mất quyền thấy/xử lý.
   ADMIN có view giám sát (`?scope=all`) — không phải bảo mật cứng mà là **phân-luồng-công-việc**.
-- **Claim chỉ từ `OPEN` + chưa gán**; `close` chỉ từ `OPEN/ASSIGNED`; **reopen giữ nguyên STAFF cũ**.
+- **Claim chỉ từ `OPEN` + chưa gán**; `close` chỉ từ `OPEN/ASSIGNED`; **reopen giữ nguyên STAFF cũ** (và chỉ
+  khi khách chưa có thread active khác — bước 7). Mọi transition qua **atomic conditional update** (§C), không find-check-save.
 - **Unread denormalized** (`staffUnread`/`customerUnread`) trên conversation → badge O(1).
 
 ### Mini sequence
@@ -316,14 +285,21 @@ sequenceDiagram
     participant FE as Frontend
     participant CH as chat-service
     participant DB as MongoDB
+    participant MQ as RabbitMQ relay
+    actor C as Khách
 
     S->>FE: mở tab "Hỗ trợ"
     FE->>CH: GET /conversations (inbox riêng · assignedStaffId==me)
     FE->>CH: GET /conversations?queue=unassigned (hàng đợi chưa gán)
-    FE->>CH: SUBSCRIBE /topic/staff.queue + /user/queue/inbox
+    FE->>CH: SUBSCRIBE /topic/staff.queue + /user/queue/inbox (relay đăng ký queue trên RabbitMQ)
     S->>CH: POST /conversations/{id}/claim (nhặt từ hàng đợi)
-    CH->>DB: OPEN→ASSIGNED · assignedStaffId=me (rời hàng đợi · STAFF khác mất thấy)
+    CH->>DB: OPEN→ASSIGNED · assignedStaffId=me (rời hàng đợi)
+    CH->>MQ: broadcast /topic/staff.queue (đã nhận → rời hàng đợi)
+    MQ->>S: STAFF khác mất thấy thread
     S->>CH: POST /conversations/{id}/messages (trả lời)
+    CH->>DB: INSERT message · customerUnread++
+    CH->>MQ: convertAndSendToUser(customer · /queue/messages)
+    MQ->>C: tin mới từ STAFF
     S->>CH: POST /conversations/{id}/close
     CH->>DB: status=CLOSED
 ```
@@ -350,7 +326,7 @@ sequenceDiagram
 ### Nhánh ngoại lệ
 | # | Nhánh | Diễn biến | Kết cục |
 |---|---|---|---|
-| 1 | Cloudinary down | upload lỗi | **502**, KHÔNG tạo message (ảnh là nội dung chính) |
+| 1 | Cloudinary down | upload lỗi | **409 `IMAGE_UPLOAD_FAILED`** (reuse `CloudinaryService` ném `ConflictException` — KHÔNG phải 502), KHÔNG tạo message (ảnh là nội dung chính) |
 | 2 | File quá lớn | vượt **5MB** (trần multipart khớp payment-service) | 413/400, không tạo message |
 | 3 | Prod thiếu key Cloudinary | sai cấu hình | service KHÔNG boot (`CloudinaryProdGuard`) — bắt lỗi sớm |
 | 4 | Không phải ảnh | content-type ngoài allowlist `image/png\|jpeg\|webp` | **415/400**, KHÔNG upload/KHÔNG tạo message (**§G.4**) |
@@ -367,6 +343,7 @@ sequenceDiagram
     participant CH as chat-service
     participant CL as Cloudinary
     participant DB as MongoDB
+    participant MQ as RabbitMQ relay
     actor R as Người nhận (STAFF được gán / khách)
 
     U->>CH: POST /conversations/{id}/images (multipart)
@@ -374,9 +351,10 @@ sequenceDiagram
     alt upload OK
         CL-->>CH: imageUrl
         CH->>DB: INSERT message(type=IMAGE · imageUrl)
-        CH->>R: convertAndSendToUser(R · /queue/messages)
+        CH->>MQ: convertAndSendToUser(R · /queue/messages)
+        MQ->>R: deliver ảnh (instance giữ socket R)
     else Cloudinary lỗi
-        CH-->>U: 502 · KHÔNG tạo message
+        CH-->>U: 409 IMAGE_UPLOAD_FAILED · KHÔNG tạo message
     end
 ```
 
@@ -386,6 +364,17 @@ sequenceDiagram
 
 ## A. Sequence tổng hợp (4 UC trong 1 diagram)
 
+> **Quy tắc routing frame (đọc cùng mọi sequence — vì sao có/không có hop qua `MQ`)**:
+> | Frame / hành động | Đường đi | Trong diagram |
+> |---|---|---|
+> | REST (`POST/GET/PATCH /api/chat/...`) | FE → GW → CH → Mongo | đi thẳng, **KHÔNG qua MQ** |
+> | `convertAndSendToUser(... /user/queue/*)` | CH → **RabbitMQ** → instance giữ socket người nhận → người nhận | **qua MQ** (cross-instance) |
+> | broadcast `/topic/staff.queue` | CH → **RabbitMQ** → fan-out mọi STAFF (mọi instance) | **qua MQ** |
+> | SEND `/app/conv.{id}.delivered` · `.typing` | client → CH (`@MessageMapping`, application prefix `/app`) | đi thẳng vào CH, **KHÔNG ra broker** |
+> | CONNECT auth + SUBSCRIBE authz | client → CH (`StompAuthChannelInterceptor`); sau đó relay đăng ký subscription lên RabbitMQ | auth tại CH · subscription relay lên broker |
+>
+> ⇒ Chỉ destination broker (`/topic`, `/user/queue` qua `convertAndSendToUser`) mới đi qua RabbitMQ; còn lại ở trong chat-service.
+
 ```mermaid
 sequenceDiagram
     actor C as Khách (USER)
@@ -393,6 +382,7 @@ sequenceDiagram
     participant FE as Frontend
     participant GW as api-gateway
     participant CH as chat-service
+    participant MQ as RabbitMQ relay
     participant DB as MongoDB chat_db
 
     %% ===== T1 mở thread (UC-CHAT-01) =====
@@ -402,14 +392,16 @@ sequenceDiagram
     GW->>CH: forward (đã verify JWT)
     CH->>DB: findOpenByCustomerId or INSERT conversation(OPEN · assignedStaffId=null)
     CH-->>FE: ConversationResponse {id · status=OPEN}
-    CH->>S: broadcast /topic/staff.queue (vào hàng đợi chưa gán)
+    CH->>MQ: broadcast /topic/staff.queue (vào hàng đợi chưa gán)
+    MQ->>S: fan-out STAFF online (mọi instance)
 
     %% ===== T2 kết nối WS (UC-CHAT-02) =====
-    Note over C,CH: T2 — kết nối real-time
+    Note over C,CH: T2 — kết nối real-time (auth tại CONNECT frame)
     FE->>GW: WS CONNECT /ws (STOMP header Authorization)
     GW->>CH: upgrade (/ws public tại gateway)
     CH->>CH: ChannelInterceptor verify JWT → Principal=userId
     FE->>CH: SUBSCRIBE /user/queue/messages · delivery · read · typing
+    CH->>MQ: relay đăng ký subscription (/queue + /topic) lên RabbitMQ
 
     %% ===== T3 khách gửi (UC-CHAT-02) =====
     Note over C,CH: T3 — khách gửi tin (sent)
@@ -419,12 +411,15 @@ sequenceDiagram
     CH->>DB: dedupe clientMsgId · INSERT message(sent) · staffUnread++
 
     alt thread ĐÃ gán (ASSIGNED)
-        CH->>S: convertAndSendToUser(assignedStaffId · /queue/messages)
-        S->>CH: SEND /app/conv.{id}.delivered
+        CH->>MQ: convertAndSendToUser(assignedStaffId · /queue/messages)
+        MQ->>S: deliver (instance giữ socket STAFF)
+        S->>CH: SEND /app/conv.{id}.delivered (KHÔNG qua broker)
         CH->>DB: set deliveredAt (delivered)
-        CH->>C: /user/queue/delivery ("đã nhận")
+        CH->>MQ: /user/queue/delivery
+        MQ->>C: "đã nhận"
     else thread CHƯA gán (OPEN · hàng đợi)
-        CH->>S: cập nhật /topic/staff.queue (preview chờ nhặt)
+        CH->>MQ: cập nhật /topic/staff.queue (preview chờ nhặt)
+        MQ->>S: fan-out STAFF online
     end
     CH-->>FE: 201 MessageResponse (echo)
 
@@ -434,18 +429,23 @@ sequenceDiagram
     FE->>GW: POST /api/chat/conversations/{id}/claim
     GW->>CH: forward
     CH->>DB: OPEN→ASSIGNED · assignedStaffId=staff (rời hàng đợi)
+    CH->>MQ: broadcast /topic/staff.queue (đã nhận → rời hàng đợi)
+    MQ->>S: STAFF khác mất thấy thread
     FE->>GW: PATCH /api/chat/conversations/{id}/read
     CH->>DB: staffUnread=0 · set readAt tin của khách (read)
-    CH->>C: convertAndSendToUser(customer · /queue/read)
+    CH->>MQ: convertAndSendToUser(customer · /queue/read)
+    MQ->>C: "đã xem"
     S->>FE: trả lời
     FE->>GW: POST .../messages (STAFF)
     CH->>DB: INSERT message · customerUnread++
-    CH->>C: convertAndSendToUser(customer · /queue/messages)
+    CH->>MQ: convertAndSendToUser(customer · /queue/messages)
+    MQ->>C: tin mới từ STAFF
 
     %% ===== T5 typing (UC-CHAT-02) =====
     Note over C,S: T5 — typing (KHÔNG lưu)
-    C->>CH: SEND /app/conv.{id}.typing
-    CH->>S: convertAndSendToUser(staff · /queue/typing)
+    C->>CH: SEND /app/conv.{id}.typing (KHÔNG qua broker)
+    CH->>MQ: convertAndSendToUser(staff · /queue/typing)
+    MQ->>S: đang gõ
 ```
 
 ## B. State machines
@@ -491,6 +491,11 @@ message — delivery 3 trạng thái (suy ra từ timestamp):
   `setUserDestinationBroadcast` để `convertAndSendToUser` chạy **cross-instance** (instance A đẩy cho user X nối
   instance B — map user↔session chia sẻ qua broker). **Swap broker KHÔNG đụng** auth CONNECT-frame / per-frame authz
   / `@MessageMapping` / `convertAndSendToUser` — code STOMP & business giữ nguyên (§D.11).
+- **Đường nào qua broker, đường nào không** (khớp diagram §A · bảng routing đầu §A): chỉ destination broker mới đi
+  qua RabbitMQ — `convertAndSendToUser(... /user/queue/*)` (Spring resolve thành `/queue/*`) và broadcast
+  `/topic/staff.queue`. **SEND `/app/conv.{id}.*`** (`delivered`/`typing`) vào thẳng `@MessageMapping` của
+  chat-service (application destination prefix `/app`) — **KHÔNG ra broker**. REST persist/history cũng không đụng
+  broker. Interceptor authz (CONNECT + per-frame) chạy ở chat-service **trước** khi frame được relay lên RabbitMQ.
 - **Hybrid REST-persist + WS-push**: gửi tin = REST (1 đường validation/authz/persist) → service
   `simpMessagingTemplate.convertAndSendToUser(recipientId, "/queue/messages", dto)`. STOMP `@MessageMapping`
   CHỈ cho `typing` + `delivered` ACK (ephemeral/idempotent). Tránh nhân đôi authz trong STOMP handler.
@@ -500,6 +505,18 @@ message — delivery 3 trạng thái (suy ra từ timestamp):
 - **Hàng đợi vs inbox riêng**: `/topic/staff.queue` (broadcast thread CHƯA gán, mọi STAFF nhặt) ≠
   `/user/queue/inbox` (cập nhật thread RIÊNG của tôi). Claim chuyển thread từ hàng đợi sang inbox riêng.
 - **Idempotency send**: dedupe `clientMsgId` (unique theo thread+sender) → retry mạng không nhân đôi tin.
+- **Chuyển trạng thái = atomic conditional update (bản Mongo của `SELECT … FOR UPDATE`)**: mọi đổi
+  `conversation.status` (claim/close/reopen/transfer/release) dùng `findAndModify`/`updateFirst` với filter
+  mang **trạng thái kỳ vọng** (vd claim: `{_id, status:OPEN, assignedStaffId:null}` → set
+  `assignedStaffId=me, status=ASSIGNED`), assert `modifiedCount==1`; thua điều kiện → **409**. KHÔNG
+  find-check-save (sẽ đua 2 STAFF cùng claim). Đây là đối ứng Mongo cho **rule #6** (row-lock) mà
+  booking/payment dùng cho mọi chuyển trạng thái.
+- **DuplicateKey → trả bản ghi đã tồn tại (idempotent, KHÔNG 500)**: unique index (`clientMsgId`,
+  1-thread-mở/khách) là chốt DB-level; khi race lọt qua check ở service và ném `DuplicateKeyException` →
+  **bắt · re-read · trả bản ghi cũ** (message/conversation) với **200**, không để 500 đúng lúc guard nổ.
+- **Đẩy WS = best-effort**: `POST /messages` **persist Mongo TRƯỚC** (nguồn sự thật) rồi mới
+  `convertAndSendToUser`; **bọc cú đẩy trong try/catch** — RabbitMQ relay chết thì **vẫn trả 201**, người
+  nhận lấy tin qua history-sync (§G.6) khi broker/họ trở lại. Lỗi broker KHÔNG được làm hỏng đường gửi tin.
 - **Ảnh**: reuse `CloudinaryService` payment-service (degrade `local-fallback://`, `CloudinaryProdGuard`).
 
 ## D. Patterns của Senior Engineer
@@ -546,6 +563,10 @@ registry.setApplicationDestinationPrefixes("/app");   // @MessageMapping typing/
 registry.setUserDestinationPrefix("/user");           // /user/** → resolve /queue/** — GIỮ NGUYÊN
 ```
 
+- **Cấu hình từ env** (snippet trên là *intent*, KHÔNG phải literal): `setRelayHost`/`setRelayPort`/`setSystemLogin`/
+  `setSystemPasscode`/`setClientLogin`/`setClientPasscode` nhận giá trị **inject qua `@Value`** từ env
+  (`RABBITMQ_HOST` · `RABBITMQ_STOMP_PORT` mặc định 61613 · `RABBITMQ_USER` · `RABBITMQ_PASS` — §E.6), KHÔNG hardcode
+  chuỗi `${...}` vào lời gọi. Port dùng `RABBITMQ_STOMP_PORT` thay vì hằng `61613`.
 - **Broker prefix `/topic`+`/queue`** (KHÔNG phải `/topic`+`/user`): client vẫn `SUBSCRIBE /user/queue/messages`,
   Spring resolve thành 1 queue `/queue/...` riêng trên RabbitMQ.
 - **User-registry broadcast**: instances chia sẻ map user↔session qua chính RabbitMQ → `convertAndSendToUser` từ
@@ -576,10 +597,10 @@ registry.setUserDestinationPrefix("/user");           // /user/** → resolve /q
 | `POST /conversations/{id}/messages` | chủ thread · STAFF được gán | gửi TEXT `{clientMsgId,type,content}` | 02 |
 | `POST /conversations/{id}/images` | chủ thread · STAFF được gán | multipart ảnh → Cloudinary → IMAGE | 04 |
 | `PATCH /conversations/{id}/read` | chủ thread · STAFF được gán | đánh dấu đã đọc (reset unread + readAt) | 02 |
-| `POST /conversations/{id}/claim` | STAFF/ADMIN | OPEN(chưa gán)→ASSIGNED + gán mình (guard `assignedStaffId=null`) | 03 |
-| `POST /conversations/{id}/transfer` | STAFF được gán · ADMIN | chuyển thread sang STAFF khác (đổi `assignedStaffId`) — handoff (**§G.7**) | 03 |
-| `POST /conversations/{id}/release` | STAFF được gán · ADMIN | nhả về hàng đợi (`ASSIGNED→OPEN` · clear assignee) (**§G.7**) | 03 |
-| `POST /conversations/{id}/close` | STAFF/ADMIN (nếu ASSIGNED: người được gán hoặc ADMIN) | →CLOSED (từ OPEN/ASSIGNED) | 03 |
+| `POST /conversations/{id}/claim` | STAFF/ADMIN | OPEN(chưa gán)→ASSIGNED + gán mình — **atomic `findAndModify`** guard `{status:OPEN, assignedStaffId:null}` (§C) | 03 |
+| `POST /conversations/{id}/transfer` | STAFF được gán · ADMIN | đổi `assignedStaffId` sang STAFF khác — **atomic conditional update** — handoff (**§G.7**) | 03 |
+| `POST /conversations/{id}/release` | STAFF được gán · ADMIN | nhả về hàng đợi (`ASSIGNED→OPEN` · clear assignee) — **atomic conditional update** (**§G.7**) | 03 |
+| `POST /conversations/{id}/close` | STAFF/ADMIN (nếu ASSIGNED: người được gán hoặc ADMIN) | →CLOSED (từ OPEN/ASSIGNED) — **atomic conditional update** | 03 |
 
 ### E.2 STOMP destinations
 | Hướng | Destination | Mô tả | UC |
@@ -611,14 +632,15 @@ conversations
   lastMessageAt       Instant (index desc — sắp inbox/hàng đợi)
   customerUnread      int
   staffUnread         int
-  activeCustomerId    UUID?  (= customerId khi OPEN/ASSIGNED · UNSET khi CLOSED · unique sparse — 1 thread mở/khách)
   archivedAt          Instant?  (null = active · set khi archive thread CLOSED — §F.5/§G.9)
   createdAt/updatedAt Instant
   // hàng đợi chưa gán = (status=OPEN && assignedStaffId=null) · inbox riêng = (assignedStaffId == me)
-  // 1 conversation mở / khách: chốt DB bằng unique sparse activeCustomerId (§F.2), không chỉ enforce ở service
+  // 1 conversation mở / khách = chốt DB bằng PARTIAL UNIQUE index trên customerId,
+  //   partialFilterExpression {status:{$in:['OPEN','ASSIGNED']}} (§F.2). KHÔNG dùng field activeCustomerId +
+  //   sparse-null (bug: mọi doc CLOSED cùng mang activeCustomerId=null sẽ đụng unique). Không chỉ enforce ở service.
 
 messages
-  _id                 ObjectId/UUID
+  _id                 ObjectId   (BẮT BUỘC ObjectId — đơn điệu theo thời gian → làm cursor keyset §F.4; UUID sẽ vỡ phân trang)
   conversationId      UUID   (index)
   senderId            UUID
   senderRole          CUSTOMER | STAFF
@@ -650,6 +672,15 @@ messages
 | Env | `RABBITMQ_HOST` · `RABBITMQ_STOMP_PORT:61613` · `RABBITMQ_USER` · `RABBITMQ_PASS` | `setSystemLogin/Passcode` (app publish) + `setClientLogin/Passcode` (per-client) |
 | Internal destinations | `/topic/simp-user-registry` · `/topic/unresolved-user-destination` | Spring tự tạo — chia sẻ user-registry để `convertAndSendToUser` chạy cross-instance |
 
+> ⚠️ **Env chưa có**: docker-compose đã chạy RabbitMQ với default `RABBITMQ_USER/PASS=badminton`, nhưng `.env.example`/`.env`
+> **chưa khai báo** `RABBITMQ_HOST` · `RABBITMQ_STOMP_PORT` (61613) · `RABBITMQ_USER` · `RABBITMQ_PASS` — **phải bổ sung khi
+> build chat-service** (`setRelayHost/Port` + `setSystemLogin/Passcode` + `setClientLogin/Passcode` đọc các biến này). Pattern
+> env của dự án: infra var có `:default` (vd `RABBITMQ_HOST:localhost`), secret không default.
+>
+> ⚠️ **Cũng thiếu biến Mongo cho chat**: `MONGODB_URI` hiện chỉ trỏ `notification_db:27017` → chat-service cần biến
+> **RIÊNG** (vd `MONGODB_CHAT_URI=mongodb://localhost:27018/chat_db`, hoặc host `mongodb-chat:27018` trong mạng docker)
+> gán vào `spring.data.mongodb.uri` của chat-service — thêm cả vào `.env.example`.
+
 ---
 
 ## F. MongoDB — Schema design patterns & tối ưu
@@ -674,10 +705,12 @@ messages
 | Hàng đợi chưa gán | `conversations` | **partial** `{status:1, lastMessageAt:-1}` · `partialFilterExpression:{assignedStaffId:null, status:'OPEN'}` |
 | Thread của khách | `conversations` | `{customerId:1, status:1}` |
 | Idempotent send (dedupe) | `messages` | **unique** `{conversationId:1, senderId:1, clientMsgId:1}` |
-| 1 thread mở / khách (chống race) | `conversations` | **unique sparse** `{activeCustomerId:1}` (= customerId khi mở · unset khi CLOSED) |
+| 1 thread mở / khách (chống race) | `conversations` | **partial unique** `{customerId:1}` · `partialFilterExpression:{status:{$in:['OPEN','ASSIGNED']}}` (thay unique-sparse `activeCustomerId` — sparse chỉ loại field VẮNG MẶT, để `=null` thì nhiều doc CLOSED đụng nhau) |
 
 > Partial index (hàng đợi chưa gán) chỉ index đúng tập docs cần quét → index **nhỏ**, ghi rẻ. Unique index
-> `clientMsgId` là chốt **DB-level** cho idempotent send (race lọt qua check ở service vẫn bị chặn).
+> `clientMsgId` là chốt **DB-level** cho idempotent send (race lọt qua check ở service vẫn bị chặn); partial
+> unique `customerId` là chốt cho 1-thread-mở/khách. **Cách TẠO các index này = §F.7** (repo CHƯA có tiền lệ
+> Mongo index → phải viết initializer riêng, KHÔNG có auto-index-creation).
 
 ### F.3 Patterns đã áp dụng (MongoDB "Building with Patterns")
 - **Computed Pattern** — `customerUnread`/`staffUnread` + `lastMessageAt`/`lastMessagePreview` tính sẵn trên
@@ -692,7 +725,8 @@ messages
 find({ conversationId, _id: { $lt: cursor } }).sort({ _id: -1 }).limit(N)
 ```
 - `cursor` = `_id` của tin cũ nhất đang hiển thị; lần đầu bỏ filter `_id`. Tránh `skip(n)` (O(n), chậm dần khi
-  cuộn lịch sử dài). `_id` đơn điệu theo thời gian nên vừa sort vừa làm con trỏ.
+  cuộn lịch sử dài). `_id` đơn điệu theo thời gian nên vừa sort vừa làm con trỏ — **phụ thuộc `messages._id` là
+  ObjectId** (§E.4); nếu buộc dùng UUID thì cursor phải đổi sang `{createdAt, _id}` (sort 2 khoá).
 
 ### F.5 TTL / archival
 - Conversation `CLOSED` lâu + tin cũ: ưu tiên **archival** (chuyển sang cold collection / set `conversations.archivedAt`) để
@@ -707,6 +741,30 @@ find({ conversationId, _id: { $lt: cursor } }).sort({ _id: -1 }).limit(N)
 - **Write concern**: `messages` `w:1` đủ cho chat (ưu tiên latency); nâng `w:majority` nếu cần bền vững tuyệt đối.
 - Nhắc lại **D.11**: real-time multi-instance = **RabbitMQ STOMP relay** (đã là thiết kế hiện tại, fan-out cross-instance, không sticky); vượt ~chục nghìn conn → tách **tầng connection riêng** (Centrifugo).
 
+### F.7 Tạo index (Mongo initializer — repo CHƯA có tiền lệ)
+> ⚠️ Repo hiện **không có** hạ tầng Mongo index nào (không `@Indexed`/`@CompoundIndex`, không
+> `spring.data.mongodb.auto-index-creation`; notification-service chưa có `@Document`). `PaymentIndexInitializer`
+> là **Postgres/JdbcTemplate** → KHÔNG tái dùng. ⇒ chat-service **phải tự tạo index** lúc khởi động; nếu quên,
+> các unique guard (idempotent send · 1-thread-mở/khách) **âm thầm không tồn tại** → tin trùng + 2 thread/khách ở prod.
+
+`ChatIndexInitializer implements CommandLineRunner` (`@Order(0)`, đối ứng Mongo của `PaymentIndexInitializer`)
+dùng `MongoTemplate.indexOps(...)` — idempotent (`ensureIndex` tạo nếu chưa có):
+
+```java
+IndexOperations conv = mongoTemplate.indexOps(Conversation.class);
+conv.ensureIndex(new Index().on("assignedStaffId", ASC).on("status", ASC).on("lastMessageAt", DESC));
+conv.ensureIndex(new Index().on("status", ASC).on("lastMessageAt", DESC)          // hàng đợi chưa gán
+        .partial(PartialIndexFilter.of(where("assignedStaffId").is(null).and("status").is("OPEN"))));
+conv.ensureIndex(new Index().on("customerId", ASC).unique()                        // 1 thread mở / khách
+        .partial(PartialIndexFilter.of(where("status").in("OPEN", "ASSIGNED"))));
+IndexOperations msg = mongoTemplate.indexOps(Message.class);
+msg.ensureIndex(new Index().on("conversationId", ASC).on("senderId", ASC).on("clientMsgId", ASC).unique()); // idempotent send
+msg.ensureIndex(new Index().on("conversationId", ASC).on("_id", DESC));            // keyset §F.4
+```
+
+- **Thay thế được** bằng `@Document` + `@CompoundIndex` + `spring.data.mongodb.auto-index-creation: true`, nhưng
+  **khuyến nghị initializer tường minh** cho khớp pattern payment-service (index = hợp đồng, tạo có kiểm soát).
+
 ---
 
 ## G. Production readiness (cho người dùng thật)
@@ -720,10 +778,16 @@ find({ conversationId, _id: { $lt: cursor } }).sort({ _id: -1 }).limit(N)
 - **Auth tại CONNECT frame**: `/ws/**` public ở gateway (handshake không mang token) → `StompAuthChannelInterceptor`
   bắt `CONNECT`, `JwtUtil.parseAndValidate(nativeHeader Authorization)`, `accessor.setUser(principal=userId)`. Token
   hỏng/hết hạn → **ERROR frame**, từ chối kết nối.
+- **Gateway route (CHƯA có — phải thêm)**: route `/ws/**` → `lb://chat-service` **bật websocket upgrade** +
+  `/api/chat/**` → `lb://chat-service`. `JwtAuthenticationFilter` ở gateway phải **skip `/ws/**`** (như path
+  public/OPTIONS) — handshake không mang token nên nếu gác sẽ chặn upgrade trước khi tới CONNECT frame.
 - **SUBSCRIBE authz**: interceptor chặn **`/topic/staff.queue` cho non-STAFF** (chỉ STAFF/ADMIN nhặt hàng đợi).
   `/user/**` an toàn sẵn theo prefix per-principal (Spring chỉ giao cho đúng `Principal`).
 - **SEND-frame authz**: `delivered`/`typing` ghi/đẩy theo `conversationId` → interceptor xác minh **principal là
   participant** (`customerId` hoặc `assignedStaffId`) trước khi xử lý → chống spoof ACK/typing thread lạ.
+  ⚠️ Đây là **hot-path** (typing bắn mỗi phím, delivered mỗi tin) → **KHÔNG query Mongo mỗi frame**: cache tập
+  participant vào **STOMP session attributes** khi SUBSCRIBE thread đó (hoặc cache TTL ngắn), **invalidate khi
+  `transfer`/`release`** (đổi `assignedStaffId`).
 - **Giới hạn khung & origin**: cấu hình `setMessageSizeLimit` / `setSendBufferSizeLimit` (chống frame khổng lồ) +
   `setAllowedOrigins(FRONTEND_URL)` ở `registerStompEndpoints` (CORS cho handshake, khớp gateway).
 - **Bảo mật RabbitMQ relay (§D.11)**: dùng **user riêng + vhost riêng** cho `setSystemLogin`/`setClientLogin` —
@@ -759,6 +823,9 @@ find({ conversationId, _id: { $lt: cursor } }).sort({ _id: -1 }).limit(N)
 - Mongo standalone **không multi-doc txn** → INSERT `message` và update `conversation.{unread,lastMessage*}` là **2
   ghi tách rời** (drift counter hiếm khi crash giữa 2 bước).
 - **Thứ tự an toàn**: ghi `message` **TRƯỚC** (nguồn sự thật), rồi cập nhật conversation (denormalized cache).
+- **Đẩy WS best-effort (broker outage)**: sau khi persist, `convertAndSendToUser` bọc **try/catch** — RabbitMQ
+  relay chết → **nuốt lỗi, vẫn trả 201** (tin đã ở Mongo; người nhận lấy qua history-sync §G.6). Không để lỗi
+  broker biến một tin đã lưu thành 500 (§C).
 - `clientMsgId` **unique** (§F.2) chặn nhân đôi. **Reconcile job** định kỳ (recompute `*Unread` từ `messages` chưa
   read) sửa drift. `read`/`delivered` idempotent (set timestamp một lần).
 - **[BACKLOG]** multi-doc transaction khi bật **replica set** (cùng tiền đề Change Streams — §F.6).
@@ -783,7 +850,8 @@ find({ conversationId, _id: { $lt: cursor } }).sort({ _id: -1 }).limit(N)
 - **≥2 instance** chat-service sau LB + **RabbitMQ STOMP relay** (broker dùng chung). Mỗi WebSocket pin 1 instance
   suốt đời; **reconnect rơi instance khác vẫn đúng** (broker shared + user-registry broadcast) → **KHÔNG cần sticky**.
 - **Giám sát RabbitMQ**: management UI **:15672** (queue depth · connection count · message rate) — broker là điểm
-  nghẽn/hỏng chung, phải theo dõi. RabbitMQ chết → real-time gián đoạn (REST persist vẫn chạy; FE reconnect khi broker hồi).
+  nghẽn/hỏng chung, phải theo dõi. RabbitMQ chết → real-time gián đoạn nhưng **gửi tin vẫn 201** (REST persist +
+  đẩy WS best-effort §G.5/§C); FE reconnect + history-sync khi broker hồi.
 - **[BACKLOG]** thêm prometheus + tracing (Zipkin) + gauge `chat.queue.depth` — khi scale.
 
 ### G.9 Privacy / PII / retention
