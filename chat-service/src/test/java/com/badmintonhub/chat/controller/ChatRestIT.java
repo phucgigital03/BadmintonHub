@@ -128,6 +128,14 @@ class ChatRestIT extends AbstractChatIntegrationTest {
     }
 
     @Test
+    void send_contentOver2000Chars_returns400() throws Exception {
+        // @Size(max=2000) on SendMessageRequest.content — enforced by @Valid at the web layer (§G.3).
+        String auth = customerAuth(UUID.randomUUID().toString());
+        String convId = openConversation(auth);
+        send(auth, convId, "m1", "a".repeat(2001)).andExpect(status().isBadRequest());
+    }
+
+    @Test
     void getMessages_otherUsersThread_returns403() throws Exception {
         String owner = customerAuth(UUID.randomUUID().toString());
         String convId = openConversation(owner);

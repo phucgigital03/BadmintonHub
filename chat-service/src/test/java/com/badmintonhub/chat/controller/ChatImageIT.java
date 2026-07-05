@@ -79,6 +79,19 @@ class ChatImageIT extends AbstractChatIntegrationTest {
     }
 
     @Test
+    void sendImage_over5MB_returns413() throws Exception {
+        // §G.4 size cap — MockMvc bypasses the servlet multipart limit, so the bytes reach validateImage.
+        String auth = customerAuth(UUID.randomUUID().toString());
+        String convId = openConversation(auth);
+        MockMultipartFile oversize =
+                new MockMultipartFile("file", "big.png", "image/png", new byte[5 * 1024 * 1024 + 1]);
+
+        mockMvc.perform(multipart("/api/chat/conversations/" + convId + "/images")
+                        .file(oversize).param("clientMsgId", "big").header("Authorization", auth))
+                .andExpect(status().isPayloadTooLarge());
+    }
+
+    @Test
     void sendImage_sameClientMsgId_deduped_201then200() throws Exception {
         String auth = customerAuth(UUID.randomUUID().toString());
         String convId = openConversation(auth);
