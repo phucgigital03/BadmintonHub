@@ -48,7 +48,10 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
     private static final String BEARER_PREFIX = "Bearer ";
     private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
-    private static final List<String> PUBLIC_PATHS = List.of("/api/auth/**", "/actuator/**");
+    // /ws/** = the STOMP chat WebSocket handshake — must be public: the browser can't attach an
+    // Authorization header to a WS upgrade, so gating it here would 401 the upgrade before it reaches
+    // chat-service's CONNECT-frame auth (StompAuthChannelInterceptor · UC_Chatting §G.1).
+    private static final List<String> PUBLIC_PATHS = List.of("/api/auth/**", "/actuator/**", "/ws/**");
     /** Anonymous read-only browse: club/court/pricing/slot-grid GETs need no token. */
     private static final List<String> PUBLIC_GET_PATHS = List.of("/api/clubs/**", "/api/courts/**");
 

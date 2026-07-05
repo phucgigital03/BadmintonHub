@@ -125,6 +125,14 @@ spring:
           uri: lb://ai-service
           predicates:
             - Path=/api/ai/**
+        - id: chat-service
+          uri: lb://chat-service
+          predicates:
+            - Path=/api/chat/**
+        - id: chat-ws                # STOMP WebSocket handshake — public at gateway (auth at CONNECT frame)
+          uri: lb://chat-service
+          predicates:
+            - Path=/ws/**
 ```
 
 ## Docker Compose
@@ -170,3 +178,4 @@ All services (except `eureka-server` itself) need `depends_on: eureka-server` an
 | `notification-service` | 3008 |
 | `event-service` | 3009 |
 | `ai-service` | 3010 |
+| `chat-service` | 3011 |

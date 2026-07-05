@@ -67,6 +67,18 @@ spring:
           uri: lb://ai-service
           predicates:
             - Path=/api/ai/**
+        - id: chat-service
+          uri: lb://chat-service
+          predicates:
+            - Path=/api/chat/**
+        # WebSocket handshake for STOMP chat — public at the gateway (browser can't attach the
+        # Authorization header to a WS upgrade); auth is enforced at the STOMP CONNECT frame in
+        # chat-service (JwtAuthenticationFilter skips /ws/** below · UC_Chatting §G.1). Spring
+        # Cloud Gateway auto-detects the Upgrade header and proxies the socket.
+        - id: chat-ws
+          uri: lb://chat-service
+          predicates:
+            - Path=/ws/**
 
 server:
   port: 3000

@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: chat-service
+  # chat-service uses MongoDB + Redis only — no PostgreSQL/JPA (mirror notification-service).
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+  data:
+    mongodb:
+      # DEDICATED var — chat_db lives in its OWN Mongo server (mongodb-chat:27018), NOT the
+      # notification MONGODB_URI (:27017). Never reuse MONGODB_URI here (§E.6 / P1-8).
+      uri: ${MONGODB_CHAT_URI:mongodb://localhost:27018/chat_db}
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+server:
+  port: 3011
+
+# JWT — HS256, validate only (re-validate forwarded Bearer token via common-security JwtUtil).
+# No default so startup fails fast if missing; JWT_SECRET is shared in root .env.
+jwt:
+  secret: ${JWT_SECRET}
+
+# RabbitMQ STOMP relay (broker for enableStompBrokerRelay) — consumed in PHASE 3 (§D.11 / §E.6).
+# Custom namespace (NOT spring.rabbitmq) so no AMQP auto-config is triggered. Dev defaults match
+# docker-compose (rabbitmq_stomp plugin :61613, user/pass badminton); prod overrides via env.
+app:
+  broker:
+    host: ${RABBITMQ_HOST:localhost}
+    stomp-port: ${RABBITMQ_STOMP_PORT:61613}
+    user: ${RABBITMQ_USER:badminton}
+    pass: ${RABBITMQ_PASS:badminton}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

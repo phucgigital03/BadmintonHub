@@ -24,6 +24,7 @@ Full design reference: `CLAUDE_Example.md` · ERDs: `ERD_All_Services.md` · Use
 | `notification-service` | 3008 | SendGrid · FCM · Kafka DLQ · Read status (MongoDB) |
 | `event-service` | 3009 | Social/competitive events · Ticket sales |
 | `ai-service` | 3010 | RAG chatbot |
+| `chat-service` | 3011 | Real-time support chat · STOMP over WebSocket · MongoDB |
 | `common` | — | Shared DTOs · exceptions · audit base entity |
 
 ## Rules — Never Violate
