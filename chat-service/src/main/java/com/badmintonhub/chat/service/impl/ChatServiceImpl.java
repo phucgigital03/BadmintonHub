@@ -9,6 +9,7 @@ import com.badmintonhub.chat.entity.ConversationStatus;
 import com.badmintonhub.chat.entity.Message;
 import com.badmintonhub.chat.entity.MessageType;
 import com.badmintonhub.chat.entity.SenderRole;
+import com.badmintonhub.chat.realtime.ChatRealtimePublisher;
 import com.badmintonhub.chat.repository.ConversationRepository;
 import com.badmintonhub.chat.repository.MessageRepository;
 import com.badmintonhub.chat.service.ChatRateLimiter;
@@ -58,6 +59,7 @@ public class ChatServiceImpl implements ChatService {
     private final MessageRepository messageRepo;
     private final MongoTemplate mongoTemplate;
     private final ChatRateLimiter rateLimiter;
+    private final ChatRealtimePublisher publisher;
 
     // ---------------------------------------------------------------- open
 
@@ -77,7 +79,9 @@ public class ChatServiceImpl implements ChatService {
                 .staffUnread(0)
                 .build();
         try {
-            return Persisted.created(ConversationResponse.from(conversationRepo.insert(fresh)));
+            Conversation saved = conversationRepo.insert(fresh);
+            publisher.queueChanged(saved); // new unassigned thread → staff queue (best-effort)
+            return Persisted.created(ConversationResponse.from(saved));
         } catch (DuplicateKeyException race) {
             // Two "Hỗ trợ" clicks raced; the partial-unique {customerId} guard fired → return the winner (P0-5).
             return Persisted.existing(ConversationResponse.from(
@@ -195,6 +199,16 @@ public class ChatServiceImpl implements ChatService {
                         .currentDate("updatedAt"),
                 Conversation.class);
 
+        // Mirror the write onto the in-memory copy so the WS payload reflects it (no extra read), then push.
+        c.setLastMessagePreview(preview(content));
+        c.setLastMessageAt(saved.getCreatedAt());
+        if (isCustomer) {
+            c.setStaffUnread(c.getStaffUnread() + 1);
+        } else {
+            c.setCustomerUnread(c.getCustomerUnread() + 1);
+        }
+        publisher.messageSent(c, MessageResponse.from(saved), isCustomer); // best-effort (P1-6)
+
         return Persisted.created(MessageResponse.from(saved));
     }
 
@@ -219,7 +233,29 @@ public class ChatServiceImpl implements ChatService {
                 new Update().set(myUnread, 0).currentDate("updatedAt"),
                 Conversation.class);
 
-        return ConversationResponse.from(load(conversationId));
+        Conversation updated = load(conversationId);
+        // Tell the other party (whose messages were just read) — best-effort read receipt.
+        UUID readReceiptTarget = isCustomer ? updated.getAssignedStaffId() : updated.getCustomerId();
+        publisher.read(readReceiptTarget, conversationId, userId);
+        return ConversationResponse.from(updated);
+    }
+
+    @Override
+    public UUID markDelivered(UUID conversationId, String messageId, UUID byUserId) {
+        if (messageId == null || !ObjectId.isValid(messageId)) {
+            return null;
+        }
+        ObjectId oid = new ObjectId(messageId);
+        Message msg = messageRepo.findById(oid).orElse(null);
+        // Ignore unknown messages, cross-thread ids, or a sender ACKing its own message.
+        if (msg == null || !conversationId.equals(msg.getConversationId()) || byUserId.equals(msg.getSenderId())) {
+            return null;
+        }
+        mongoTemplate.updateFirst(
+                new Query(where("_id").is(oid).and("deliveredAt").is(null)),
+                new Update().set("deliveredAt", Instant.now()),
+                Message.class);
+        return msg.getSenderId();
     }
 
     // ---------------------------------------------------------------- lifecycle (atomic — P0-1)
@@ -242,6 +278,7 @@ public class ChatServiceImpl implements ChatService {
             }
             throw conflict("ALREADY_CLAIMED", "Hội thoại đã được nhận hoặc đã đóng");
         }
+        publisher.queueChanged(claimed); // left the queue → into my inbox (best-effort)
         return ConversationResponse.from(claimed);
     }
 
@@ -262,6 +299,7 @@ public class ChatServiceImpl implements ChatService {
         if (closed == null) {
             throw conflict("CONVERSATION_CHANGED", "Trạng thái hội thoại vừa thay đổi, thử lại");
         }
+        publisher.queueChanged(closed);
         return ConversationResponse.from(closed);
     }
 
@@ -283,6 +321,7 @@ public class ChatServiceImpl implements ChatService {
         if (transferred == null) {
             throw conflict("CONVERSATION_CHANGED", "Trạng thái hội thoại vừa thay đổi, thử lại");
         }
+        publisher.queueChanged(transferred); // new assignee → their inbox (best-effort)
         return ConversationResponse.from(transferred);
     }
 
@@ -304,6 +343,7 @@ public class ChatServiceImpl implements ChatService {
         if (released == null) {
             throw conflict("CONVERSATION_CHANGED", "Trạng thái hội thoại vừa thay đổi, thử lại");
         }
+        publisher.queueChanged(released); // back to the unassigned queue (best-effort)
         return ConversationResponse.from(released);
     }
 

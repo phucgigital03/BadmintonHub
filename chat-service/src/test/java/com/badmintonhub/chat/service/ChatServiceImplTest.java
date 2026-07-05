@@ -48,6 +48,7 @@ class ChatServiceImplTest {
     @Mock MessageRepository messageRepo;
     @Mock MongoTemplate mongoTemplate;
     @Mock ChatRateLimiter rateLimiter;
+    @Mock com.badmintonhub.chat.realtime.ChatRealtimePublisher publisher;
 
     @InjectMocks ChatServiceImpl service;
 

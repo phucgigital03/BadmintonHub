@@ -24,11 +24,15 @@ server:
 jwt:
   secret: ${JWT_SECRET}
 
-# RabbitMQ STOMP relay (broker for enableStompBrokerRelay) — consumed in PHASE 3 (§D.11 / §E.6).
-# Custom namespace (NOT spring.rabbitmq) so no AMQP auto-config is triggered. Dev defaults match
-# docker-compose (rabbitmq_stomp plugin :61613, user/pass badminton); prod overrides via env.
+# WebSocket handshake CORS (setAllowedOrigins) — same origin var the FE runs on.
+# RabbitMQ STOMP relay (broker for enableStompBrokerRelay) — §D.11 / §E.6. Custom namespace (NOT
+# spring.rabbitmq) so no AMQP auto-config is triggered. Dev defaults match docker-compose (rabbitmq_stomp
+# plugin :61613, user/pass badminton); prod overrides via env.
+# broker.relay=true → RabbitMQ relay (cross-instance fan-out); false → in-memory simple broker (local/test).
 app:
+  frontend-url: ${FRONTEND_URL:http://localhost:5173}
   broker:
+    relay: ${CHAT_BROKER_RELAY:true}
     host: ${RABBITMQ_HOST:localhost}
     stomp-port: ${RABBITMQ_STOMP_PORT:61613}
     user: ${RABBITMQ_USER:badminton}

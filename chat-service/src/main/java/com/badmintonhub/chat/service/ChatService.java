@@ -37,6 +37,14 @@ public interface ChatService {
     /** Mark the other party's messages read + reset my unread. */
     ConversationResponse markRead(UUID conversationId, UUID userId, Collection<String> roles);
 
+    /**
+     * Mark a single message delivered (recipient's WS ACK). Idempotent (set once).
+     *
+     * @return the original sender's id to notify with a delivery receipt, or {@code null} if there is
+     *         nothing to do (message not found / not in this thread / ACK'd by its own sender).
+     */
+    UUID markDelivered(UUID conversationId, String messageId, UUID byUserId);
+
     /** OPEN(unassigned) → ASSIGNED to me — atomic (P0-1). */
     ConversationResponse claim(UUID conversationId, UUID staffId, Collection<String> roles);
 
