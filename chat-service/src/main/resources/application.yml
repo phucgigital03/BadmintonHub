@@ -15,9 +15,21 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+  servlet:
+    multipart:
+      # Chat image attachments (UC-CHAT-04) — cap at 5MB (matches payment-service proof upload).
+      max-file-size: 5MB
+      max-request-size: 5MB
 
 server:
   port: 3011
+
+# Cloudinary — chat image upload. Degrades to a local-fallback:// placeholder when unset (dev/test);
+# CloudinaryProdGuard aborts boot in the prod profile if missing.
+cloudinary:
+  cloud-name: ${CLOUDINARY_CLOUD_NAME:}
+  api-key: ${CLOUDINARY_API_KEY:}
+  api-secret: ${CLOUDINARY_API_SECRET:}
 
 # JWT — HS256, validate only (re-validate forwarded Bearer token via common-security JwtUtil).
 # No default so startup fails fast if missing; JWT_SECRET is shared in root .env.

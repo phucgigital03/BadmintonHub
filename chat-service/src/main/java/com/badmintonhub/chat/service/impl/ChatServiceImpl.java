@@ -14,6 +14,7 @@ import com.badmintonhub.chat.repository.ConversationRepository;
 import com.badmintonhub.chat.repository.MessageRepository;
 import com.badmintonhub.chat.service.ChatRateLimiter;
 import com.badmintonhub.chat.service.ChatService;
+import com.badmintonhub.chat.service.CloudinaryService;
 import com.badmintonhub.common.exception.ApiException;
 import com.badmintonhub.common.exception.ConflictException;
 import com.badmintonhub.common.exception.ForbiddenException;
@@ -32,9 +33,12 @@ import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import org.springframework.web.multipart.MultipartFile;
+
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.springframework.data.mongodb.core.query.Criteria.where;
@@ -54,12 +58,15 @@ public class ChatServiceImpl implements ChatService {
     private static final int MAX_PAGE = 100;
     private static final int DEFAULT_PAGE = 30;
     private static final int PREVIEW_LEN = 120;
+    private static final Set<String> ALLOWED_IMAGE_TYPES = Set.of("image/png", "image/jpeg", "image/webp");
+    private static final long MAX_IMAGE_BYTES = 5L * 1024 * 1024;
 
     private final ConversationRepository conversationRepo;
     private final MessageRepository messageRepo;
     private final MongoTemplate mongoTemplate;
     private final ChatRateLimiter rateLimiter;
     private final ChatRealtimePublisher publisher;
+    private final CloudinaryService cloudinaryService;
 
     // ---------------------------------------------------------------- open
 
@@ -135,72 +142,90 @@ public class ChatServiceImpl implements ChatService {
     public Persisted<MessageResponse> sendMessage(UUID conversationId, UUID senderId, Collection<String> roles,
                                                   SendMessageRequest req) {
         Conversation c = load(conversationId);
-
-        boolean isCustomer = senderId.equals(c.getCustomerId());
-        boolean isAssignedStaff = senderId.equals(c.getAssignedStaffId());
-        if (!isCustomer && !isAssignedStaff && !isAdmin(roles)) {
-            throw forbidden();
-        }
+        boolean isCustomer = requireSenderParticipant(c, senderId, roles);
         if (req.type() != null && req.type() == MessageType.IMAGE) {
-            throw new ApiException("USE_IMAGE_ENDPOINT", "Ảnh gửi qua /images (chưa hỗ trợ ở bản này)", HttpStatus.BAD_REQUEST);
+            throw badRequest("USE_IMAGE_ENDPOINT", "Ảnh gửi qua endpoint /images");
         }
-
         rateLimiter.check(senderId);
-
         String content = req.content() == null ? "" : req.content().trim();
         if (content.isEmpty()) {
-            throw new ApiException("EMPTY_MESSAGE", "Nội dung không được để trống", HttpStatus.BAD_REQUEST);
+            throw badRequest("EMPTY_MESSAGE", "Nội dung không được để trống");
         }
+        return persistAndPush(c, senderId, isCustomer, MessageType.TEXT, content, null,
+                req.clientMsgId(), req.senderName());
+    }
 
-        // Reopen a CLOSED thread when the customer writes back (P0-3). Atomic CLOSED→ASSIGNED keeping the
-        // old staff; if the customer meanwhile opened another active thread, the partial-unique fires → 409
-        // and the FE should route the message to that active thread instead.
+    @Override
+    public Persisted<MessageResponse> sendImage(UUID conversationId, UUID senderId, Collection<String> roles,
+                                                MultipartFile file, String clientMsgId, String caption,
+                                                String senderName) {
+        Conversation c = load(conversationId);
+        boolean isCustomer = requireSenderParticipant(c, senderId, roles);
+        if (clientMsgId == null || clientMsgId.isBlank()) {
+            throw badRequest("MISSING_CLIENT_MSG_ID", "Thiếu clientMsgId");
+        }
+        validateImage(file);                                    // MIME allowlist + size (§G.4)
+        rateLimiter.checkImage(senderId);
+        String imageUrl = cloudinaryService.uploadImage(file);  // ConflictException → 409 IMAGE_UPLOAD_FAILED
+        String cap = (caption == null) ? null : caption.trim();
+        return persistAndPush(c, senderId, isCustomer, MessageType.IMAGE, cap, imageUrl, clientMsgId, senderName);
+    }
+
+    /**
+     * Shared by text + image: reopen a CLOSED thread if the customer writes back (P0-3), persist the message
+     * FIRST (source of truth, §G.5) with idempotent dedupe (P0-5), update the denormalized conversation cache,
+     * then best-effort WS push (P1-6).
+     */
+    private Persisted<MessageResponse> persistAndPush(Conversation c, UUID senderId, boolean isCustomer,
+                                                      MessageType type, String content, String imageUrl,
+                                                      String clientMsgId, String senderNameCandidate) {
+        UUID conversationId = c.getId();
         if (c.getStatus() == ConversationStatus.CLOSED) {
             if (!isCustomer) {
                 throw conflict("CONVERSATION_CLOSED", "Hội thoại đã đóng");
             }
-            c = reopen(conversationId);
+            c = reopen(conversationId); // atomic CLOSED→ASSIGNED; partial-unique collision → 409
         }
 
         SenderRole senderRole = isCustomer ? SenderRole.CUSTOMER : SenderRole.STAFF;
-        String senderName = cleanName(req.senderName(),
-                isCustomer ? c.getCustomerName() : "Nhân viên hỗ trợ");
+        String senderName = cleanName(senderNameCandidate, isCustomer ? c.getCustomerName() : "Nhân viên hỗ trợ");
 
         Message message = Message.builder()
                 .conversationId(conversationId)
                 .senderId(senderId)
                 .senderRole(senderRole)
                 .senderName(senderName)
-                .type(MessageType.TEXT)
+                .type(type)
                 .content(content)
-                .clientMsgId(req.clientMsgId())
+                .imageUrl(imageUrl)
+                .clientMsgId(clientMsgId)
                 .createdAt(Instant.now())
                 .build();
 
         Message saved;
         try {
-            saved = messageRepo.insert(message);   // source of truth persisted FIRST (§G.5)
+            saved = messageRepo.insert(message); // source of truth persisted FIRST (§G.5)
         } catch (DuplicateKeyException retry) {
             // Same clientMsgId replayed → return the original, no duplicate (P0-5). Idempotent 200.
             return Persisted.existing(messageRepo
-                    .findFirstByConversationIdAndSenderIdAndClientMsgId(conversationId, senderId, req.clientMsgId())
+                    .findFirstByConversationIdAndSenderIdAndClientMsgId(conversationId, senderId, clientMsgId)
                     .map(MessageResponse::from)
                     .orElseThrow(() -> conflict("MESSAGE_RACE", "Không gửi được tin, thử lại")));
         }
 
-        // Then update the denormalized conversation cache (recipient unread + last-message preview).
+        String previewText = (type == MessageType.IMAGE) ? "[Hình ảnh]" : preview(content);
         String recipientUnread = isCustomer ? "staffUnread" : "customerUnread";
         mongoTemplate.updateFirst(
                 new Query(where("_id").is(conversationId)),
                 new Update()
                         .inc(recipientUnread, 1)
-                        .set("lastMessagePreview", preview(content))
+                        .set("lastMessagePreview", previewText)
                         .set("lastMessageAt", saved.getCreatedAt())
                         .currentDate("updatedAt"),
                 Conversation.class);
 
-        // Mirror the write onto the in-memory copy so the WS payload reflects it (no extra read), then push.
-        c.setLastMessagePreview(preview(content));
+        // Mirror the write onto the in-memory copy so the WS payload reflects it, then push (best-effort).
+        c.setLastMessagePreview(previewText);
         c.setLastMessageAt(saved.getCreatedAt());
         if (isCustomer) {
             c.setStaffUnread(c.getStaffUnread() + 1);
@@ -210,6 +235,29 @@ public class ChatServiceImpl implements ChatService {
         publisher.messageSent(c, MessageResponse.from(saved), isCustomer); // best-effort (P1-6)
 
         return Persisted.created(MessageResponse.from(saved));
+    }
+
+    private boolean requireSenderParticipant(Conversation c, UUID senderId, Collection<String> roles) {
+        boolean isCustomer = senderId.equals(c.getCustomerId());
+        boolean isAssignedStaff = senderId.equals(c.getAssignedStaffId());
+        if (!isCustomer && !isAssignedStaff && !isAdmin(roles)) {
+            throw forbidden();
+        }
+        return isCustomer;
+    }
+
+    private void validateImage(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw badRequest("EMPTY_FILE", "Chưa chọn ảnh");
+        }
+        String contentType = file.getContentType();
+        if (contentType == null || !ALLOWED_IMAGE_TYPES.contains(contentType.toLowerCase())) {
+            throw new ApiException("UNSUPPORTED_MEDIA_TYPE", "Chỉ chấp nhận ảnh PNG, JPEG hoặc WEBP",
+                    HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        }
+        if (file.getSize() > MAX_IMAGE_BYTES) {
+            throw new ApiException("FILE_TOO_LARGE", "Ảnh vượt quá 5MB", HttpStatus.PAYLOAD_TOO_LARGE);
+        }
     }
 
     // ---------------------------------------------------------------- read
@@ -419,5 +467,9 @@ public class ChatServiceImpl implements ChatService {
 
     private static ConflictException conflict(String code, String message) {
         return new ConflictException(code, message);
+    }
+
+    private static ApiException badRequest(String code, String message) {
+        return new ApiException(code, message, HttpStatus.BAD_REQUEST);
     }
 }

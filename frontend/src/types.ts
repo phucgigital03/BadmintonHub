@@ -140,3 +140,50 @@ export interface PaymentInfo {
   detail?: string; // "Pickleball 2: 6h00 - 7h00"
   date?: string;
 }
+
+// ── Chat / support (chat-service) ───────────────────────────────────────────
+export type ConversationStatus = 'OPEN' | 'ASSIGNED' | 'CLOSED';
+export type ChatSenderRole = 'CUSTOMER' | 'STAFF';
+export type ChatMessageType = 'TEXT' | 'IMAGE';
+
+export interface ChatConversation {
+  id: string;
+  customerId: string;
+  customerName: string;
+  assignedStaffId: string | null;
+  status: ConversationStatus;
+  lastMessagePreview: string | null;
+  lastMessageAt: string | null;
+  customerUnread: number;
+  staffUnread: number;
+  createdAt: string;
+}
+
+export interface ChatMessage {
+  id: string; // Mongo ObjectId hex — also the keyset cursor for older-history paging
+  conversationId: string;
+  senderId: string;
+  senderRole: ChatSenderRole;
+  senderName: string;
+  type: ChatMessageType;
+  content: string | null;
+  imageUrl: string | null;
+  clientMsgId: string;
+  deliveredAt: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+// Realtime signal payloads (over /user/queue/*)
+export interface DeliveryReceipt {
+  conversationId: string;
+  messageId: string;
+}
+export interface ReadReceipt {
+  conversationId: string;
+  readerId: string;
+}
+export interface TypingSignal {
+  conversationId: string;
+  fromUserId: string;
+}

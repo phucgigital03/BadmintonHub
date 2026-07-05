@@ -14,6 +14,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -26,6 +27,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Collection;
 import java.util.List;
@@ -81,6 +83,20 @@ public class ChatController {
                                                 @Valid @RequestBody SendMessageRequest req,
                                                 Authentication auth) {
         Persisted<MessageResponse> result = chatService.sendMessage(id, userId(auth), roles(auth), req);
+        return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK).body(result.value());
+    }
+
+    /** UC-CHAT-04 — send an image attachment (multipart). 201 new / 200 duplicate. */
+    @PostMapping(value = "/conversations/{id}/images", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<MessageResponse> sendImage(@PathVariable UUID id,
+                                                     @RequestParam("file") MultipartFile file,
+                                                     @RequestParam("clientMsgId") String clientMsgId,
+                                                     @RequestParam(value = "caption", required = false) String caption,
+                                                     @RequestParam(value = "senderName", required = false) String senderName,
+                                                     Authentication auth) {
+        Persisted<MessageResponse> result =
+                chatService.sendImage(id, userId(auth), roles(auth), file, clientMsgId, caption, senderName);
         return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK).body(result.value());
     }
 

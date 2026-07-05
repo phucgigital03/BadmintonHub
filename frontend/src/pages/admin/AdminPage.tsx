@@ -23,19 +23,21 @@ import {
 import { useAuthStore } from '../../store/authStore';
 import { mockMatches } from '../../api/mockData';
 import { cn, formatVnd } from '../../lib/cn';
+import { StaffSupportPanel } from '../../features/chat/StaffSupportPanel';
 
-type Tab = 'users' | 'court' | 'proofs' | 'matches' | 'bookings' | 'refunds';
+type Tab = 'users' | 'court' | 'proofs' | 'support' | 'matches' | 'bookings' | 'refunds';
 const TABS: { key: Tab; label: string }[] = [
   { key: 'users', label: 'Người dùng' },
   { key: 'court', label: 'Sân & giá' },
   { key: 'proofs', label: 'Duyệt thanh toán' },
+  { key: 'support', label: 'Hỗ trợ' },
   { key: 'matches', label: 'Trận đấu' },
   { key: 'bookings', label: 'Đặt sân' },
   { key: 'refunds', label: 'Hoàn tiền' },
 ];
 
-// Tabs wired to a real backend (no mock banner): user-service + court-service + payment-service.
-const REAL_TABS: Tab[] = ['users', 'court', 'proofs', 'refunds'];
+// Tabs wired to a real backend (no mock banner): user-service + court-service + payment-service + chat-service.
+const REAL_TABS: Tab[] = ['users', 'court', 'proofs', 'support', 'refunds'];
 
 function AdminInner() {
   const navigate = useNavigate();
@@ -65,6 +67,8 @@ function AdminInner() {
       {tab === 'court' && <CourtAdminTab />}
 
       {tab === 'proofs' && <ProofsTab />}
+
+      {tab === 'support' && <StaffSupportPanel />}
 
       {tab === 'matches' && (
         <div className="space-y-3">

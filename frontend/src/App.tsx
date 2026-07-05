@@ -22,9 +22,11 @@ import CoachesPage from './pages/coach/CoachesPage';
 import CoachDetailPage from './pages/coach/CoachDetailPage';
 import AdminPage from './pages/admin/AdminPage';
 import { ProtectedRoute } from './components/routing/ProtectedRoute';
+import { CustomerChatWidget } from './features/chat/CustomerChatWidget';
 
 export default function App() {
   return (
+    <>
     <Routes>
       <Route path="/" element={<HomePage />} />
 
@@ -91,5 +93,7 @@ export default function App() {
 
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
+    <CustomerChatWidget />
+    </>
   );
 }

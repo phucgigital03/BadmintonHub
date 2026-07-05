@@ -23,7 +23,11 @@ axiosClient.interceptors.request.use((config) => {
 // Coalesce concurrent refreshes into one in-flight promise.
 let refreshing: Promise<string | null> | null = null;
 
-async function refreshAccessToken(): Promise<string | null> {
+/**
+ * Silent access-token refresh (POST /api/auth/refresh, cookie-based). Exported so the STOMP client can
+ * reuse it when the chat socket is closed on token expiry (§G.2) before reconnecting.
+ */
+export async function refreshAccessToken(): Promise<string | null> {
   try {
     const res = await axios.post(
       `${BASE_URL}/api/auth/refresh`,

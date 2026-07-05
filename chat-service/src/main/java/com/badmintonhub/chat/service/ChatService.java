@@ -34,6 +34,11 @@ public interface ChatService {
     Persisted<MessageResponse> sendMessage(UUID conversationId, UUID senderId, Collection<String> roles,
                                            SendMessageRequest req);
 
+    /** Send an image message (UC-CHAT-04): MIME allowlist + ≤5MB → Cloudinary upload → IMAGE message. */
+    Persisted<MessageResponse> sendImage(UUID conversationId, UUID senderId, Collection<String> roles,
+                                         org.springframework.web.multipart.MultipartFile file,
+                                         String clientMsgId, String caption, String senderName);
+
     /** Mark the other party's messages read + reset my unread. */
     ConversationResponse markRead(UUID conversationId, UUID userId, Collection<String> roles);
 
