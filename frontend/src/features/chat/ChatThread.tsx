@@ -264,7 +264,7 @@ export function ChatThread({ conversationId, meId, myRole, senderName, canSend =
             onChange={(e) => onDraftChange(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), sendText())}
             placeholder="Nhập tin nhắn…"
-            className="flex-1 rounded-full border border-black/10 px-3 py-2 text-sm outline-none focus:border-brand-gold"
+            className="flex-1 rounded-full border border-black/10 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-brand-gold"
           />
           <button
             type="button"
