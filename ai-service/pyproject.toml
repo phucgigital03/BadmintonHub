@@ -17,6 +17,13 @@ dependencies = [
     "py-eureka-client>=0.11",
     "pyjwt>=2.10",
     "fastmcp>=2.0",
+    # --- agent (Day 2): LangGraph + Gemini. mcp-adapters/checkpoint-postgres installed now,
+    #     the MCP-load path and the postgres checkpointer are wired later (Day 3/4). ---
+    "langgraph>=0.2.60",
+    "langchain-core>=0.3.29",
+    "langchain-google-genai>=2.0.8",
+    "langchain-mcp-adapters>=0.1",
+    "langgraph-checkpoint-postgres>=2.0",
     "structlog>=24.4",
     "opentelemetry-sdk",
     "opentelemetry-exporter-zipkin-json",
