@@ -33,7 +33,7 @@
         <module>escrow-service</module>
         <module>notification-service</module>
         <module>event-service</module>
-        <module>ai-service</module>
+        <!-- ai-service is a Python (FastAPI) service — not built by Maven. See ai-service/README.md -->
         <module>chat-service</module>
     </modules>
 
