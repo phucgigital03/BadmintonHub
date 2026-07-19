@@ -28,6 +28,16 @@ def test_verify_valid_token_returns_claims():
     assert is_email_verified(claims) is True
 
 
+def test_verify_hs512_token_accepted():
+    # jjwt signWith(key) picks HS512 for a ≥64-byte JWT_SECRET — real platform tokens use it
+    token = jwt.encode(
+        {"sub": "u-1", "exp": int(time.time()) + 900},
+        get_settings().jwt_secret,
+        algorithm="HS512",
+    )
+    assert user_id_of(verify(token)) == "u-1"
+
+
 def test_verify_expired_token_raises():
     token = _mint({"sub": "u-1", "exp": int(time.time()) - 10})
     with pytest.raises(JwtError):

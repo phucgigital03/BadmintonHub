@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # --- Auth: shared HS256 secret with the rest of the platform (no default → fail fast) ---
     jwt_secret: str
 
+    # --- Assistant sessions (in-memory Day 3; Day 6 syncs the TTL with PII retention) ---
+    session_ttl_minutes: int = 1440
+
     # --- Service discovery ---
     eureka_url: str = "http://localhost:8761/eureka/"
     service_name: str = "ai-service"

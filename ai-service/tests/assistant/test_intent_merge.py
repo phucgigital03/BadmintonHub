@@ -40,3 +40,22 @@ def test_new_value_overrides():
     assert merged.sport == "BADMINTON"
     assert merged.budget_max == 300_000
     assert merged.time_from == time(18, 0)  # kept
+
+
+def test_llm_tz_aware_time_normalized_to_naive():
+    """The LLM's structured output can emit tz-aware times (pydantic TzInfo) — they must be
+    stripped to naive at the model boundary, else the checkpointer's msgpack serializer breaks
+    and the ranker's naive-vs-aware time comparisons raise. Regression for the Day-3 live bug."""
+    from datetime import time as _time
+
+    from langgraph.checkpoint.serde.jsonplus import _msgpack_enc
+
+    from app.assistant.models import BookingIntent
+
+    intent = BookingIntent.model_validate(
+        {"sport": "PICKLEBALL", "time_from": "18:00:00-07:00", "time_to": "20:00:00-07:00"}
+    )
+    assert intent.time_from == _time(18, 0) and intent.time_from.tzinfo is None
+    assert intent.time_to == _time(20, 0) and intent.time_to.tzinfo is None
+    # must round-trip through the LangGraph checkpointer serializer without raising
+    _msgpack_enc(intent)

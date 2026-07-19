@@ -1,7 +1,10 @@
-"""HS256 JWT verification — re-validates the forwarded Bearer token (defense in depth).
+"""HMAC JWT verification — re-validates the forwarded Bearer token (defense in depth).
 
-Matches the platform contract (common-security JwtUtil): HS256 over the raw UTF-8 bytes
-of JWT_SECRET, claims `sub` (userId), `roles` (List[str]), `email_verified` (bool), `jti`.
+Matches the platform contract (common-security JwtUtil): HMAC over the raw UTF-8 bytes of
+JWT_SECRET, claims `sub` (userId), `roles` (List[str]), `email_verified` (bool), `jti`.
+The Java side signs with jjwt's `signWith(key)`, which picks the HMAC strength from the
+key length (a ≥64-byte JWT_SECRET yields HS512 tokens) — so accept the whole HS family,
+same key.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ def verify(token: str) -> dict:
         return jwt.decode(
             token,
             settings.jwt_secret,
-            algorithms=["HS256"],
+            algorithms=["HS256", "HS384", "HS512"],
             options={"require": ["sub", "exp"]},
         )
     except jwt.PyJWTError as exc:

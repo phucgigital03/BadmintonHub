@@ -178,3 +178,23 @@ def _to_vnd(raw: str, unit: str | None) -> int | None:
     if unit in ("trieu", "tr", "m"):
         return n * 1_000_000
     return n  # already whole VND (e.g. 200000 / 200.000)
+
+
+# --- sport -----------------------------------------------------------------------
+
+# Keyword (accent-stripped) → platform sport enum. The LLM still handles fuzzy phrasing;
+# this deterministic pass makes the common cases work even when the LLM is unavailable.
+_SPORTS: dict[str, str] = {
+    "pickleball": "PICKLEBALL",
+    "pickle ball": "PICKLEBALL",
+    "cau long": "BADMINTON",
+    "badminton": "BADMINTON",
+}
+
+
+def parse_sport(text: str) -> str | None:
+    stripped = _strip_accents(text)
+    for keyword, sport in _SPORTS.items():
+        if keyword in stripped:
+            return sport
+    return None

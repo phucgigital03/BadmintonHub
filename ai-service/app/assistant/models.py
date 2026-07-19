@@ -16,7 +16,8 @@ from typing import Annotated, Any, TypedDict
 from uuid import UUID
 
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.alias_generators import to_camel
 
 from app.tools.schemas import BookingItemInput
 
@@ -40,6 +41,16 @@ class BookingIntent(BaseModel):
     party_size: int | None = None
     club_id: UUID | None = None
     missing: list[str] = Field(default_factory=list)
+
+    @field_validator("time_from", "time_to")
+    @classmethod
+    def _strip_tzinfo(cls, v: time | None) -> time | None:
+        """The whole platform works in naive local time (vi_parse, the grid, the ranker all
+        use naive times). The LLM's structured output can emit a tz-aware time (pydantic
+        attaches a pydantic_core.TzInfo) — that both breaks the checkpointer's msgpack
+        serializer AND would make naive-vs-aware ranker comparisons raise. Normalize here at
+        the model boundary so times are always naive regardless of source."""
+        return v.replace(tzinfo=None) if v is not None and v.tzinfo is not None else v
 
     def merge(self, update: BookingIntent) -> BookingIntent:
         """Overlay only the fields the newer message actually mentioned (non-None)."""
@@ -83,14 +94,24 @@ class ProposedBooking(BaseModel):
 
 
 class ConfirmDecision(BaseModel):
-    """Day 3 placeholder — the user's yes/no (+ edits) at the human_review interrupt."""
+    """The user's yes/no (+ edits) at the human_review interrupt (§9).
+
+    customer_name/customer_phone are optional overrides: the FE sends them when the
+    guardrail bounced asking for contact info (UserResponse has no phone — §11.4).
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
     confirmed: bool
     edits: str | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
 
 
 class AgentTurn(BaseModel):
-    """One assistant reply returned to the caller (later streamed over SSE)."""
+    """One assistant reply returned to the caller (streamed over SSE as camelCase JSON)."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
     role: str = "assistant"
     content: str
@@ -110,5 +131,8 @@ class AgentState(TypedDict, total=False):
     raw_slots: list  # AVAILABLE cells the agent gathered this turn (AvailableSlot[])
     candidates: list[CourtOption]
     proposal: ProposedBooking | None
+    default_contact: dict | None  # {"name","phone"} from the most recent booking (§11.4)
+    hold: dict | None  # BookingResponse dump — the real PENDING hold (totalPrice authoritative)
+    payment: dict | None  # PaymentResponse dump — Bank-QR info for the FE
     turn: AgentTurn | None  # the reply this turn produced
     stage: str  # perceive|gather|search|propose|await_confirm|held|payment|escalated|done

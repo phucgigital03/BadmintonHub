@@ -1,6 +1,10 @@
 """Provider-agnostic chat model factory (§8.1).
 
-Default: Gemini 2.5 Flash, temperature=0 (stable, reproducible reasoning/tool-planning).
+Default: Gemini 3.5 Flash, temperature=0 (stable, reproducible reasoning/tool-planning).
+Pinned to one generation on purpose — reproducibility matters for a money-facing concierge,
+and the Day-7 red-team eval must run against a FIXED model (a moving `-latest` alias could
+shift under us between eval and production). When Google deprecates it (as it did the spec's
+original gemini-2.5-flash for new keys), bump this one constant and re-run the eval.
 Provider is switchable via `LLM_PROVIDER` in .env. The model is *injectable* everywhere so
 tests pass a fake model and never touch the network.
 """
@@ -11,7 +15,7 @@ from typing import Any
 
 from app.config import get_settings
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.5-flash"
 
 
 def get_chat_model() -> Any:

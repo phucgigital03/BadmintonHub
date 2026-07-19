@@ -4,7 +4,12 @@ from datetime import date, time, timedelta
 
 import pytest
 
-from app.assistant.vi_parse import parse_budget, parse_time_window, resolve_relative_date
+from app.assistant.vi_parse import (
+    parse_budget,
+    parse_sport,
+    parse_time_window,
+    resolve_relative_date,
+)
 
 TODAY = date(2026, 7, 20)  # a Monday
 
@@ -83,3 +88,17 @@ def test_full_sentence_extracts_window_and_budget_not_the_clock_numbers():
     text = "đặt pickleball 18-20h dưới 200k quận 3"
     assert parse_time_window(text) == (time(18, 0), time(20, 0))
     assert parse_budget(text) == 200_000  # 18/20 (clock) are not mistaken for a budget
+
+
+# --- sport (deterministic keywords — works even when the LLM is down) --------------
+
+def test_parse_sport_pickleball():
+    assert parse_sport("đặt sân pickleball ngày mai 18h") == "PICKLEBALL"
+
+
+def test_parse_sport_cau_long_accented():
+    assert parse_sport("đặt sân cầu lông tối thứ 6") == "BADMINTON"
+
+
+def test_parse_sport_absent_returns_none():
+    assert parse_sport("đặt sân ngày mai 18h-20h") is None
