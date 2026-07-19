@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     gemini_api_key: str = "FILL_IN"
     openai_api_key: str = "FILL_IN"
 
+    # --- RAG (Day 4): Gemini embeddings over pgvector on ai_db ---
+    # Pinned to gemini-embedding-001 (stable GA) at 768 dims — text-embedding-004 was removed
+    # for new keys (same story as gemini-3.5-flash). Pin one GA model (no -preview) so the
+    # Day-7 eval runs on a fixed embedder. Changing it means re-seeding + a matching Vector dim.
+    embedding_model: str = "models/gemini-embedding-001"
+    embedding_dim: int = 768
+    rag_top_k: int = 4
+    # cosine similarity floor — below → don't answer, escalate. Calibrated live on
+    # gemini-embedding-001@768: in-corpus hits score 0.73–0.83, off-topic 0.56–0.59, so 0.68
+    # sits cleanly in the gap (raise if a new corpus narrows it).
+    rag_min_score: float = 0.68
+
     # --- Database (ai_db · postgres-ai on host port 5440) ---
     ai_db_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5440/ai_db"
 

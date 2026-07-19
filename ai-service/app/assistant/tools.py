@@ -37,6 +37,21 @@ async def get_pricing(club_id: str, sport: str) -> str:
     return _dump(rules)
 
 
+@tool
+async def search_knowledge(query: str) -> str:
+    """Tra cứu KIẾN THỨC TĨNH đã curate: chính sách hủy/hoàn tiền, tiện ích & địa chỉ CLB,
+    hướng dẫn thanh toán chuyển khoản, khuyến mãi. KHÔNG dùng cho lịch/giá sân (đó là dữ liệu
+    sống — dùng get_day_grid/get_pricing). Trả về các đoạn tài liệu kèm nguồn; nếu không có thì
+    KHÔNG bịa. query: câu hỏi của khách bằng tiếng Việt.
+
+    Khi node agent bind tool này, việc thực thi được điều phối tới KnowledgeService đã inject
+    (offline test dùng fake); bản thân hàm này là đường chạy độc lập (MCP / fallback)."""
+    from app.assistant.knowledge import get_default_knowledge_service
+
+    hits = await get_default_knowledge_service().search_knowledge(query)
+    return json.dumps([h.model_dump(mode="json") for h in hits], ensure_ascii=False)
+
+
 READ_TOOLS = [get_day_grid, get_pricing]
 
 

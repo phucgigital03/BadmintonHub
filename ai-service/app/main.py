@@ -31,9 +31,53 @@ async def lifespan(app: FastAPI):
         provider=settings.llm_provider,
     )
     await eureka.register()
+    await _setup_graph(app, settings)
     yield
+    await _teardown_graph(app)
     await eureka.deregister()
     log.info("ai-service.stopped")
+
+
+async def _setup_graph(app: FastAPI, settings) -> None:
+    """Install the default graph (Postgres-checkpointed for warm-start across restart) + the
+    shared knowledge service. Falls back to an in-memory checkpointer if Postgres is unavailable
+    so the service still runs (degrade, never crash)."""
+    from app.assistant.graph import build_default_graph, set_default_graph
+    from app.assistant.knowledge import get_default_knowledge_service
+
+    app.state.knowledge = get_default_knowledge_service()
+    app.state.checkpointer_pool = None
+    try:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from psycopg.rows import dict_row
+        from psycopg_pool import AsyncConnectionPool
+
+        conninfo = settings.ai_db_url.replace("+asyncpg", "")
+        pool = AsyncConnectionPool(
+            conninfo=conninfo,
+            max_size=10,
+            open=False,
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        )
+        await pool.open()
+        saver = AsyncPostgresSaver(pool)
+        await saver.setup()
+        set_default_graph(build_default_graph(checkpointer=saver))
+        app.state.checkpointer_pool = pool
+        log.info("checkpointer.postgres_ready")
+    except Exception as exc:  # noqa: BLE001 — degrade to MemorySaver, keep the service up
+        log.error(
+            "checkpointer.postgres_failed_fallback_memory",
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
+        set_default_graph(build_default_graph())
+
+
+async def _teardown_graph(app: FastAPI) -> None:
+    pool = getattr(app.state, "checkpointer_pool", None)
+    if pool is not None:
+        await pool.close()
 
 
 def create_app() -> FastAPI:

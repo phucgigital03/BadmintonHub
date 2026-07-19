@@ -132,6 +132,8 @@ class AgentState(TypedDict, total=False):
     candidates: list[CourtOption]
     proposal: ProposedBooking | None
     default_contact: dict | None  # {"name","phone"} from the most recent booking (§11.4)
+    preferences: dict | None  # L2 PreferenceSnapshot dump (learned club/sport/time/budget)
+    personalization_note: str  # VN one-liner surfaced + injected into the agent system prompt
     hold: dict | None  # BookingResponse dump — the real PENDING hold (totalPrice authoritative)
     payment: dict | None  # PaymentResponse dump — Bank-QR info for the FE
     turn: AgentTurn | None  # the reply this turn produced

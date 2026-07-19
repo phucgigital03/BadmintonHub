@@ -10,6 +10,7 @@ calls the payment /confirm endpoint; confirming money stays with STAFF in the ol
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import date
 
 import structlog
@@ -18,10 +19,13 @@ from langgraph.graph import END
 from langgraph.types import Command, interrupt
 
 from app.assistant import guardrail as checks
+from app.assistant import preferences as prefs_mod
 from app.assistant import prompts, vi_parse
+from app.assistant.knowledge import KnowledgeHit
 from app.assistant.models import AgentState, AgentTurn, BookingIntent, ConfirmDecision
 from app.assistant.ranker import RankResult, rank
-from app.assistant.tools import READ_TOOLS, execute_tool_call
+from app.assistant.tools import READ_TOOLS, execute_tool_call, search_knowledge
+from app.config import get_settings
 from app.security.context import get_claims
 from app.tools import booking_tools, schemas
 from app.tools.http_client import ToolError
@@ -39,6 +43,108 @@ _CLARIFY_PROMPTS = {
     "time_to": "Bạn muốn chơi đến mấy giờ?",
 }
 
+# --- routing (§ Day 4 route node: booking vs knowledge, CONTEXT-AWARE) ---------------
+
+# Stages that mean "a booking is in progress" — a follow-up here defaults to the booking
+# branch so a loop-back edit ("đổi qua 19h") is never misrouted to knowledge.
+ACTIVE_STAGES = {"gather", "search", "propose", "await_confirm", "held"}
+
+# Static-knowledge topics ONLY (policy / facilities / payment method / promotions).
+# NOTE: price & availability are LIVE data (tool-query) — never routed to the corpus (§6.1).
+_KNOWLEDGE_KW = (
+    "huy",  # hủy
+    "hoan",  # hoàn / hoàn tiền
+    "chinh sach",  # chính sách
+    "quy dinh",  # quy định
+    "dia chi",  # địa chỉ
+    "mo cua",  # mở cửa
+    "gio mo",  # giờ mở
+    "tien ich",  # tiện ích
+    "thanh toan",  # thanh toán
+    "chuyen khoan",  # chuyển khoản
+    "qr",
+    "bien lai",  # biên lai
+    "khuyen mai",  # khuyến mãi
+    "uu dai",  # ưu đãi
+    "gap nhan vien",  # gặp nhân viên
+)
+# Booking intent signals — presence of any means the message is about a booking, not a policy Q.
+# (NOT the bare word "sân" — it appears in policy questions too, e.g. "chính sách hủy sân".)
+_BOOKING_KW = ("dat san", "dat cho", "doi qua", "doi gio", "doi san", "doi ngay", "giu cho")
+
+
+def _norm(text: str) -> str:
+    """Lowercase + strip Vietnamese accents (đ→d) for keyword matching."""
+    lowered = text.lower().replace("đ", "d")
+    decomposed = unicodedata.normalize("NFD", lowered)
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+
+
+def _has_booking_signal(text: str) -> bool:
+    normalized = _norm(text)
+    if any(kw in normalized for kw in _BOOKING_KW):
+        return True
+    # vi_parse deterministic signals (time window / budget / sport / relative date)
+    fr, to = vi_parse.parse_time_window(text)
+    return bool(
+        fr or to or vi_parse.parse_budget(text) or vi_parse.parse_sport(text)
+        or vi_parse.resolve_relative_date(text, date.today())
+    )
+
+
+def _looks_like_question(normalized: str) -> bool:
+    return "?" in normalized or any(
+        q in normalized for q in ("khong", "the nao", "bao lau", "bao nhieu", "co hoan", "co duoc")
+    )
+
+
+def classify_route(intent: BookingIntent | None, stage: str | None, text: str) -> str:
+    """"knowledge" or "booking" — CONTEXT-AWARE (looks at intent/stage, not just the sentence).
+
+    A message routes to knowledge only if it has a policy/facilities keyword AND no booking
+    signal. Mid-booking (an intent exists and stage is active) we're stricter: a knowledge word
+    that isn't actually a question stays on the booking branch, so a loop-back edit like
+    "đổi qua 19h" (or a passing mention) is never misrouted. Otherwise → booking (perceive
+    still slot-fills / asks)."""
+    normalized = _norm(text)
+    has_kw = any(kw in normalized for kw in _KNOWLEDGE_KW)
+    if not has_kw or _has_booking_signal(text):
+        return "booking"
+    active = intent is not None and (stage in ACTIVE_STAGES)
+    if active and not _looks_like_question(normalized):
+        return "booking"
+    return "knowledge"
+
+
+def _knowledge_sources(hits: list[KnowledgeHit]) -> str:
+    seen: list[str] = []
+    for h in hits:
+        if h.source not in seen:
+            seen.append(h.source)
+    return ", ".join(seen)
+
+
+def compose_knowledge_turn(hits: list[KnowledgeHit], min_score: float | None = None) -> AgentTurn:
+    """Grounded answer built ONLY from retrieved chunks + a source citation. Below-threshold /
+    empty → do NOT fabricate; offer escalate. Template-based (deterministic, cheap, no LLM
+    tokens) so the answer can never drift from the corpus."""
+    floor = min_score if min_score is not None else get_settings().rag_min_score
+    good = [h for h in hits if h.score >= floor]
+    if not good:
+        return AgentTurn(
+            content=(
+                "Mình chưa có thông tin này trong tài liệu của câu lạc bộ. "
+                "Bạn muốn gặp nhân viên hỗ trợ để được giải đáp không?"
+            ),
+            suggested_actions=["Gặp nhân viên"],
+        )
+    body = "\n\n".join(h.content for h in good[:2])
+    citation = _knowledge_sources(good[:2])
+    return AgentTurn(
+        content=f"Theo tài liệu của câu lạc bộ:\n\n{body}\n\n(Nguồn: {citation})",
+        suggested_actions=["Đặt sân", "Gặp nhân viên"],
+    )
+
 
 def _last_user_text(state: AgentState) -> str:
     for msg in reversed(state.get("messages", [])):
@@ -52,10 +158,33 @@ def _compute_missing(intent: BookingIntent) -> list[str]:
 
 
 class AssistantNodes:
-    """Holds the (injectable) chat model so tests can pass a fake and stay offline."""
+    """Holds the injectable collaborators (chat model · preference store · knowledge service)
+    so tests can pass fakes and stay entirely offline."""
 
-    def __init__(self, model=None):
+    def __init__(self, model=None, *, prefs_store=None, knowledge=None):
         self.model = model
+        self.prefs_store = prefs_store
+        # NOTE: attribute name must NOT collide with the `knowledge` node method below —
+        # `nodes.knowledge` must resolve to the bound method for add_node("knowledge", ...).
+        self.knowledge_svc = knowledge
+
+    # --- route (entry: booking vs static-knowledge, context-aware) --------------
+    async def route(self, state: AgentState) -> dict:
+        """No-op node — the classification lives in the conditional edge (route_decision) so it
+        can read the freshest state. Kept as an explicit entry node for graph clarity."""
+        return {}
+
+    # --- knowledge (RAG answer, grounded + cited, never fabricated) --------------
+    async def knowledge(self, state: AgentState) -> dict:
+        text = _last_user_text(state)
+        hits: list[KnowledgeHit] = []
+        if self.knowledge_svc is not None:
+            try:
+                hits = await self.knowledge_svc.search_knowledge(text)
+            except Exception as exc:  # noqa: BLE001 — embed rate-limit/network → degrade, don't crash
+                log.error("knowledge.search_failed", exc_type=type(exc).__name__, error=str(exc))
+        turn = compose_knowledge_turn(hits)
+        return {"turn": turn, "stage": "knowledge", "messages": [AIMessage(content=turn.content)]}
 
     # --- perceive ---------------------------------------------------------------
     async def perceive(self, state: AgentState) -> dict:
@@ -112,33 +241,77 @@ class AssistantNodes:
     # --- memory_load ------------------------------------------------------------
     async def memory_load(self, state: AgentState) -> dict:
         """Fill empty context from the user's own data (§3): the club from the most recent
-        booking (else the single club) and the default contact name/phone (§11.4 —
-        UserResponse has no phone, so the latest booking is the only source).
-        user_preferences (L2) arrives Day 4."""
+        booking (else the single club), the default contact name/phone (§11.4 — UserResponse
+        has no phone, so the latest booking is the only source), and — when a preference store
+        is wired — the L2 learned preferences (usual club/sport/time/budget) that personalize
+        the proposal without overriding anything the user stated this turn."""
         intent = state["intent"]
         update: dict = {"intent": intent}
+        user_id = state.get("user_id", "")
         need_club = intent.club_id is None
         need_contact = not state.get("default_contact")
-        if not (need_club or need_contact):
-            return update
-        try:
-            bookings = await booking_tools.get_user_bookings()
-            latest = bookings.content[0] if bookings.content else None
-            if need_contact and latest and (latest.customer_name or latest.customer_phone):
-                update["default_contact"] = {
-                    "name": latest.customer_name,
-                    "phone": latest.customer_phone,
-                }
-            if need_club:
-                if latest and latest.club_id:
-                    intent.club_id = latest.club_id
-                else:
-                    clubs = await booking_tools.search_clubs(sport=intent.sport)
-                    if clubs.content:
-                        intent.club_id = clubs.content[0].id
-        except ToolError as exc:
-            log.warning("memory_load.tool_error", code=exc.code, status=exc.status_code)
+
+        cached: list | None = None
+
+        async def _bookings() -> list:
+            nonlocal cached
+            if cached is None:
+                cached = (await booking_tools.get_user_bookings()).content
+            return cached
+
+        if need_club or need_contact:
+            try:
+                content = await _bookings()
+                latest = content[0] if content else None
+                if need_contact and latest and (latest.customer_name or latest.customer_phone):
+                    update["default_contact"] = {
+                        "name": latest.customer_name,
+                        "phone": latest.customer_phone,
+                    }
+                if need_club:
+                    if latest and latest.club_id:
+                        intent.club_id = latest.club_id
+                    else:
+                        clubs = await booking_tools.search_clubs(sport=intent.sport)
+                        if clubs.content:
+                            intent.club_id = clubs.content[0].id
+            except ToolError as exc:
+                log.warning("memory_load.tool_error", code=exc.code, status=exc.status_code)
+
+        # L2 personalization (only when a preference store is injected — offline tests skip it)
+        if self.prefs_store is not None:
+            try:
+                snapshot = await self.prefs_store.load(user_id) if user_id else None
+                if snapshot is None or snapshot.is_empty():
+                    derived = prefs_mod.derive_from_bookings(await _bookings())
+                    if user_id and not derived.is_empty():
+                        await self.prefs_store.upsert(user_id, derived)
+                    snapshot = derived
+                self._apply_preferences(intent, snapshot)
+                note = prefs_mod.personalization_note(snapshot)
+                update["preferences"] = snapshot.model_dump(mode="json")
+                if note:
+                    update["personalization_note"] = note
+            except ToolError as exc:
+                log.warning("memory_load.prefs_tool_error", code=exc.code, status=exc.status_code)
+            except Exception as exc:  # noqa: BLE001 — personalization is best-effort, never fatal
+                log.warning("memory_load.prefs_error", exc_type=type(exc).__name__, error=str(exc))
         return update
+
+    @staticmethod
+    def _apply_preferences(intent: BookingIntent, snapshot: prefs_mod.PreferenceSnapshot) -> None:
+        """Fill ONLY the gaps the user didn't state — never override an explicit criterion."""
+        if intent.club_id is None and snapshot.preferred_club_id:
+            intent.club_id = snapshot.preferred_club_id
+        if intent.sport is None and snapshot.preferred_sport:
+            intent.sport = snapshot.preferred_sport
+        if intent.time_from is None and intent.time_to is None:
+            window = snapshot.window_times()
+            if window:
+                intent.time_from, intent.time_to = window
+        if intent.budget_max is None and snapshot.budget_max:
+            intent.budget_max = snapshot.budget_max
+        intent.missing = _compute_missing(intent)
 
     # --- ask_clarify ------------------------------------------------------------
     async def ask_clarify(self, state: AgentState) -> dict:
@@ -163,8 +336,14 @@ class AssistantNodes:
                 f"CLB {intent.club_id}, ngày {intent.date}, môn {intent.sport}, "
                 f"khung giờ {intent.time_from}–{intent.time_to}. Hãy tra lịch sân còn trống."
             )
-            convo = [SystemMessage(content=prompts.AGENT_SYSTEM), HumanMessage(content=directive)]
-            llm = self.model.bind_tools(READ_TOOLS)
+            system = prompts.AGENT_SYSTEM
+            note = state.get("personalization_note")
+            if note:
+                system += prompts.personalization_line(note)
+            convo = [SystemMessage(content=system), HumanMessage(content=directive)]
+            # mixed-intent: the agent can also answer a passing knowledge question in-flow
+            tools = READ_TOOLS + ([search_knowledge] if self.knowledge_svc is not None else [])
+            llm = self.model.bind_tools(tools)
             try:
                 for _ in range(MAX_REACT_STEPS):
                     ai = await llm.ainvoke(convo)
@@ -195,10 +374,24 @@ class AssistantNodes:
         return {"raw_slots": collected, "stage": "search"}
 
     async def _run_tool(self, call: dict):
+        name = call["name"]
+        args = call.get("args", {})
+        # search_knowledge dispatches to the INJECTED knowledge service (offline test uses a fake),
+        # not the module-level default — so the ranker/tool contract stays testable.
+        if name == "search_knowledge" and self.knowledge_svc is not None:
+            import json
+
+            try:
+                hits = await self.knowledge_svc.search_knowledge(args.get("query", ""))
+                payload = [h.model_dump(mode="json") for h in hits]
+                return None, json.dumps(payload, ensure_ascii=False)
+            except Exception as exc:  # noqa: BLE001 — knowledge is a side-answer; never break booking
+                log.warning("agent.knowledge_error", exc_type=type(exc).__name__)
+                return None, '{"error": "KNOWLEDGE_UNAVAILABLE"}'
         try:
-            return await execute_tool_call(call["name"], call["args"])
+            return await execute_tool_call(name, args)
         except ToolError as exc:
-            log.warning("agent.tool_error", tool=call.get("name"), code=exc.code)
+            log.warning("agent.tool_error", tool=name, code=exc.code)
             return None, f'{{"error": "{exc.code}"}}'
 
     # --- rank + propose (CODE) --------------------------------------------------
@@ -378,6 +571,7 @@ class AssistantNodes:
                 }
             ],
         )
+        await self._remember_preferences(state, booking)
         return Command(
             goto=END,
             update={
@@ -387,6 +581,28 @@ class AssistantNodes:
                 "messages": [AIMessage(content=content)],
             },
         )
+
+    async def _remember_preferences(self, state: AgentState, booking: schemas.BookingResponse):
+        """Capture the just-booked preferences (§6 L2) — sport comes from the intent (known),
+        club/time/budget from the confirmed booking. Best-effort: never block the QR."""
+        if self.prefs_store is None:
+            return
+        user_id = state.get("user_id", "")
+        if not user_id:
+            return
+        intent = state.get("intent")
+        sport = intent.sport if intent else None
+        try:
+            await self.prefs_store.upsert(user_id, prefs_mod.snapshot_from_booking(sport, booking))
+        except Exception as exc:  # noqa: BLE001 — learning is best-effort, money path must not fail
+            log.warning(
+                "payment.remember_prefs_failed", exc_type=type(exc).__name__, error=str(exc)
+            )
+
+
+def route_decision(state: AgentState) -> str:
+    """Conditional edge after the entry `route` node: static-knowledge question vs booking."""
+    return classify_route(state.get("intent"), state.get("stage"), _last_user_text(state))
 
 
 def gate(state: AgentState) -> str:

@@ -10,11 +10,12 @@ EXPECTED = {
     "create_booking_hold",
     "initiate_payment",
     "cancel_booking",
+    "search_knowledge",  # tool #8 (Day 4 RAG)
 }
 
 
-def test_seven_tools_registered():
-    assert len(BOOKING_TOOLS) == 7
+def test_eight_tools_registered():
+    assert len(BOOKING_TOOLS) == 8
 
 
 @pytest.mark.asyncio

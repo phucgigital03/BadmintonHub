@@ -15,14 +15,18 @@ import asyncio
 import os
 import uuid
 
+import jwt as pyjwt
+
 from app.assistant.graph import (
     build_graph,
     has_pending_interrupt,
     resume_confirm,
     run_turn,
 )
+from app.assistant.knowledge import get_default_knowledge_service
 from app.assistant.llm import get_chat_model
 from app.assistant.models import ConfirmDecision
+from app.assistant.preferences import get_default_preference_store
 
 
 def _print_turn(state: dict) -> None:
@@ -66,9 +70,13 @@ async def _main() -> None:
     bearer = os.environ.get("AI_BEARER")
     if not bearer:
         raise SystemExit("Set AI_BEARER=<user JWT> first.")
-    graph = build_graph(get_chat_model())
+    user_id = pyjwt.decode(bearer, options={"verify_signature": False}).get("sub", "")
+    knowledge = get_default_knowledge_service()
+    graph = build_graph(
+        get_chat_model(), prefs_store=get_default_preference_store(), knowledge=knowledge
+    )
     session_id = str(uuid.uuid4())
-    print("Trợ lý đặt sân (Day 3 — có giữ chỗ thật sau khi bạn xác nhận). Gõ 'quit' để thoát.\n")
+    print("Trợ lý đặt sân (Day 4 — RAG + cá nhân hoá + giữ chỗ thật). Gõ 'quit' để thoát.\n")
     while True:
         try:
             text = input("Bạn: ").strip()
@@ -78,7 +86,14 @@ async def _main() -> None:
             break
         if not text:
             continue
-        state = await run_turn(graph, session_id=session_id, bearer=bearer, text=text)
+        state = await run_turn(
+            graph,
+            session_id=session_id,
+            bearer=bearer,
+            text=text,
+            user_id=user_id,
+            knowledge=knowledge,
+        )
         _print_turn(state)
         await _confirm_loop(graph, session_id, bearer)
 

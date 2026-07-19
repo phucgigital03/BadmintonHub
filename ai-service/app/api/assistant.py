@@ -20,6 +20,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.assistant import sessions
 from app.assistant.graph import (
+    answer_knowledge_while_paused,
     get_default_graph,
     get_thread_state,
     has_pending_interrupt,
@@ -27,6 +28,7 @@ from app.assistant.graph import (
     snapshot_has_interrupt,
 )
 from app.assistant.models import ConfirmDecision
+from app.assistant.nodes import classify_route
 from app.security.deps import error_body, require_user
 from app.tools import schemas
 
@@ -40,9 +42,15 @@ def get_graph():
     return get_default_graph()
 
 
+def get_knowledge(request: Request):
+    """Shared KnowledgeService installed by the app lifespan (None when unset — e.g. tests)."""
+    return getattr(request.app.state, "knowledge", None)
+
+
 # FastAPI-idiomatic Annotated dependencies (also keeps ruff B008 happy)
 UserClaims = Annotated[dict, Depends(require_user)]
 GraphDep = Annotated[Any, Depends(get_graph)]
+KnowledgeDep = Annotated[Any, Depends(get_knowledge)]
 
 
 class MessageRequest(BaseModel):
@@ -97,6 +105,7 @@ async def send_message(
     request: Request,
     claims: UserClaims,
     graph: GraphDep,
+    knowledge: KnowledgeDep,
 ):
     _resolve(session_id, claims)
     bearer = _bearer(request)
@@ -109,7 +118,20 @@ async def send_message(
         set_auth(bearer, claims)
         try:
             if await has_pending_interrupt(graph, session_id):
-                # free text while a proposal is pending = a non-confirm edit ("đổi qua 19h")
+                snapshot = await get_thread_state(graph, session_id)
+                stage = snapshot.values.get("stage")
+                intent = snapshot.values.get("intent")
+                # mixed-intent: a knowledge question while a proposal is pending → answer inline
+                # WITHOUT resuming, so the interrupt stays and /confirm keeps working (§ Day 4)
+                is_knowledge = classify_route(intent, stage, body.text) == "knowledge"
+                if knowledge is not None and is_knowledge:
+                    values = await answer_knowledge_while_paused(snapshot, knowledge, body.text)
+                    yield {"event": "node", "data": json.dumps({"node": "knowledge"})}
+                    payload = _turn_payload(values, awaiting=True)
+                    yield {"event": "turn", "data": json.dumps(payload, ensure_ascii=False)}
+                    yield {"event": "done", "data": "{}"}
+                    return
+                # otherwise free text is a non-confirm edit ("đổi qua 19h")
                 resume = ConfirmDecision(confirmed=False, edits=body.text)
                 stream_input: object = Command(resume=resume.model_dump())
             else:

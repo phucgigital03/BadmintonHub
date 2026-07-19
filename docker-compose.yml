@@ -154,7 +154,9 @@ services:
     restart: unless-stopped
 
   postgres-ai:
-    image: postgres:15-alpine
+    # pgvector/pgvector:pg15 = PostgreSQL 15 + the `vector` extension (Day 4 RAG on ai_db).
+    # Same PG15 data-dir as postgres:15-alpine, so the existing volume stays compatible.
+    image: pgvector/pgvector:pg15
     container_name: postgres-ai
     environment:
       POSTGRES_DB: ai_db
