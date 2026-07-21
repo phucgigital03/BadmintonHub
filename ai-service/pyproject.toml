@@ -57,6 +57,9 @@ python-downloads = "automatic"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "live: hits the real LLM (Gemini) — skipped unless RUN_LIVE_EVAL=1 (opt-in, uses free-tier quota)",
+]
 
 [tool.ruff]
 line-length = 100

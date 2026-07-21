@@ -48,6 +48,12 @@ def test_no_date_phrase_returns_none():
     assert resolve_relative_date("đặt sân pickleball", TODAY) is None
 
 
+def test_khuyen_mai_is_not_tomorrow():
+    # "khuyến mãi" strips to "khuyen mai" — must NOT be read as "ngày mai" (Day-7 fix)
+    assert resolve_relative_date("có khuyến mãi gì không?", TODAY) is None
+    assert resolve_relative_date("tối mai có ưu đãi không?", TODAY) == TODAY + timedelta(days=1)
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [
@@ -59,6 +65,13 @@ def test_no_date_phrase_returns_none():
         ("7h tối", (time(19, 0), None)),
         ("2h chiều", (time(14, 0), None)),
         ("8h sáng", (time(8, 0), None)),
+        # spelled-out "giờ" marker binds the hour to its period word (Day-7 parser fix)
+        ("6 giờ tối", (time(18, 0), None)),
+        ("8 giờ sáng", (time(8, 0), None)),
+        ("tối mai 6 giờ", (time(18, 0), None)),
+        ("18 giờ đến 20 giờ", (time(18, 0), time(20, 0))),
+        # a leading weekday digit must NOT be swallowed as the hour (Day-7 parser fix)
+        ("tối thứ 6 18-20h", (time(18, 0), time(20, 0))),
         ("không có giờ", (None, None)),
     ],
 )

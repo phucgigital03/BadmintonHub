@@ -48,7 +48,9 @@ def resolve_relative_date(text: str, today: date_) -> date_ | None:
         return today
     if re.search(r"\bngay kia\b|\bmot\b", t):
         return today + timedelta(days=2)
-    if re.search(r"\b(ngay )?mai\b", t):
+    # "mai" (ngày mai → tomorrow) reads the ACCENTED text: "mai" and "mãi" (as in "khuyến mãi")
+    # both strip to "mai", so only the accented form tells tomorrow from a promotions question.
+    if re.search(r"\bmai\b", text.lower()):
         return today + timedelta(days=1)
 
     # explicit dd/mm (optionally /yyyy)
@@ -110,15 +112,18 @@ def _to_24h(hour: int, minute: int, period: str | None) -> time | None:
 def parse_time_window(text: str) -> tuple[time | None, time | None]:
     """Extract a start/end time window. Returns (from, to); either may be None.
 
-    Handles: 18-20h · 18h-20h · 18h30-20h · 18:00-20:00 · từ 18h đến 20h · single "19h" /
-    "7h tối" (→ from only) with sáng/chiều/tối period words.
+    Handles: 18-20h · 18h-20h · 18h30-20h · 18:00-20:00 · từ 18h đến 20h · the spelled-out
+    "giờ" marker (18 giờ đến 20 giờ · "6 giờ tối") · single "19h" / "7h tối" (→ from only)
+    with sáng/chiều/tối period words. The hour marker is h / : / "giờ" (accent-stripped "gio").
     """
     t = _strip_accents(text)
     period = next((p for p in _ALL_PERIODS if re.search(rf"\b{p}\b", t)), None)
 
-    # range: 18[h:30]? (-|–|den|toi) 20[h:00]?
+    # range: 18[h/giờ/:][30]? (-|–|den|toi) 20[h/giờ/:][00]?. Minutes bind ONLY right after a
+    # marker, so a leading weekday digit ("thứ 6 18-20h") is never misread as 6:18.
     rng = re.search(
-        r"(\d{1,2})\s*(?:h|:)?\s*(\d{2})?\s*(?:-|–|den|toi)\s*(\d{1,2})\s*(?:h|:)?\s*(\d{2})?",
+        r"(\d{1,2})(?:\s*(?:h|gio|:)\s*(\d{2})?)?\s*(?:-|–|den|toi)"
+        r"\s*(\d{1,2})(?:\s*(?:h|gio|:)\s*(\d{2})?)?",
         t,
     )
     if rng:
@@ -127,8 +132,9 @@ def parse_time_window(text: str) -> tuple[time | None, time | None]:
         end = _to_24h(int(h2), int(m2 or 0), period)
         return start, end
 
-    # single time: 18h / 18h30 / 18:00 / "7h tối"
-    single = re.search(r"(\d{1,2})\s*(?:h|:)\s*(\d{2})?", t)
+    # single time: 18h / 18h30 / 18:00 / "6 giờ tối". The "giờ" (→ "gio") marker lets a
+    # spelled-out hour bind to its sáng/chiều/tối period, so "6 giờ tối" → 18:00 (not 06:00).
+    single = re.search(r"(\d{1,2})\s*(?:h|gio|:)\s*(\d{2})?", t)
     if single:
         start = _to_24h(int(single.group(1)), int(single.group(2) or 0), period)
         return start, None
