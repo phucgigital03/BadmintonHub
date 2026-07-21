@@ -23,6 +23,7 @@ import CoachDetailPage from './pages/coach/CoachDetailPage';
 import AdminPage from './pages/admin/AdminPage';
 import { ProtectedRoute } from './components/routing/ProtectedRoute';
 import { CustomerChatWidget } from './features/chat/CustomerChatWidget';
+import { AiBookingWidget } from './features/aiBooking/AiBookingWidget';
 
 export default function App() {
   return (
@@ -94,6 +95,7 @@ export default function App() {
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
     <CustomerChatWidget />
+    <AiBookingWidget />
     </>
   );
 }

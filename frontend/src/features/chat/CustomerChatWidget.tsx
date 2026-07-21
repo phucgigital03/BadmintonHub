@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../../store/authStore';
+import { useSupportChatStore } from '../../store/supportChatStore';
 import { useChatSocket } from '../../hooks/useChatSocket';
 import { chatApi } from '../../api/chat';
 import { ChatThread } from './ChatThread';
@@ -25,6 +26,13 @@ export function CustomerChatWidget() {
   const [opening, setOpening] = useState(false);
   const openRef = useRef(open);
   openRef.current = open;
+  const convRef = useRef(conversationId);
+  convRef.current = conversationId;
+
+  // Escalation signal from the (separate) AI booking widget — open this staff chat + optional first message.
+  const openTick = useSupportChatStore((s) => s.openTick);
+  const prefill = useSupportChatStore((s) => s.prefill);
+  const consumed = useSupportChatStore((s) => s.consumed);
 
   // Socket lives once a conversation exists (i.e. after first open).
   const { subscribe } = useChatSocket(isCustomer && !!conversationId);
@@ -37,7 +45,48 @@ export function CustomerChatWidget() {
     return off;
   }, [conversationId, subscribe]);
 
+  // React to an escalation request (find-or-create the thread, post the AI summary as the first message).
+  useEffect(() => {
+    if (openTick === 0 || !isCustomer) return;
+    let cancelled = false;
+    (async () => {
+      setUnread(0);
+      setOpening(true);
+      try {
+        const id = await ensureConversation();
+        if (prefill && id) {
+          await chatApi.send(id, {
+            clientMsgId: crypto.randomUUID(),
+            content: prefill,
+            senderName: user!.fullName,
+          });
+        }
+      } catch {
+        toast.error('Không mở được hỗ trợ, thử lại sau');
+      } finally {
+        if (!cancelled) {
+          setOpening(false);
+          setOpen(true);
+          consumed();
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTick]);
+
   if (!isCustomer) return null;
+
+  /** Find-or-create my open thread (idempotent) and remember its id. Returns the conversation id. */
+  async function ensureConversation(): Promise<string> {
+    if (convRef.current) return convRef.current;
+    const conv = await chatApi.open(user!.fullName);
+    setConversationId(conv.id);
+    convRef.current = conv.id;
+    return conv.id;
+  }
 
   async function toggle() {
     if (open) {
@@ -48,8 +97,7 @@ export function CustomerChatWidget() {
     if (!conversationId) {
       setOpening(true);
       try {
-        const conv = await chatApi.open(user!.fullName);
-        setConversationId(conv.id);
+        await ensureConversation();
       } catch {
         toast.error('Không mở được hỗ trợ, thử lại sau');
         setOpening(false);
