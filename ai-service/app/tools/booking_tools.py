@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date as date_
 from uuid import UUID
 
-from app.tools import schemas
+from app.tools import schemas, validate
 from app.tools.http_client import request
 
 # --- READ --------------------------------------------------------------------------
@@ -23,6 +23,8 @@ async def search_clubs(
     radius: float | None = None,
 ) -> schemas.Page[schemas.ClubResponse]:
     """Find clubs (venues). Single-club today, so filters are near-degenerate. READ-only."""
+    sport = validate.sport(sport, required=False)
+    validate.coordinate(lat, lng, radius)
     params = {
         k: v
         for k, v in {
@@ -42,6 +44,7 @@ async def get_day_grid(
     club_id: UUID, date: date_, sport: str | None = None
 ) -> list[schemas.AvailableSlot]:
     """Real-time slot grid for a club/day → only the AVAILABLE 30-min cells. READ-only."""
+    sport = validate.sport(sport, required=False)
     params: dict[str, str] = {"date": date.isoformat()}
     if sport:
         params["sport"] = sport
@@ -66,6 +69,7 @@ async def get_day_grid(
 
 async def get_pricing(club_id: UUID, sport: str) -> list[schemas.PricingRuleResponse]:
     """Pricing rules for a club + sport (sport is required upstream). READ-only."""
+    sport = validate.sport(sport, required=True)
     resp = await request("GET", f"/api/clubs/{club_id}/pricing", params={"sport": sport})
     return [schemas.PricingRuleResponse.model_validate(x) for x in resp.json()]
 
@@ -88,6 +92,11 @@ async def create_booking_hold(
     note: str | None = None,
 ) -> schemas.BookingResponse:
     """Create a PENDING booking hold (10 min). Requires EMAIL_VERIFIED. WRITE — confirm first."""
+    # validate the LLM/ranker-derived args before touching the real booking API (§11.2)
+    validate.items(items)
+    name = validate.name(name)
+    phone = validate.phone(phone)
+    note = validate.note(note)
     normalized = [schemas.BookingItemInput.model_validate(i) for i in items]
     body: dict = {
         "clubId": str(club_id),

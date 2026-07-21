@@ -14,11 +14,12 @@ from typing import Annotated, Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from app.assistant import sessions
+from app.assistant import audit, limits, sessions
 from app.assistant.graph import (
     answer_knowledge_while_paused,
     get_default_graph,
@@ -27,8 +28,11 @@ from app.assistant.graph import (
     resume_confirm,
     snapshot_has_interrupt,
 )
+from app.assistant.limits import LimitExceeded, caps_from_settings
 from app.assistant.models import ConfirmDecision
 from app.assistant.nodes import classify_route
+from app.assistant.rate_limit import AllowAllRateLimiter
+from app.config import get_settings
 from app.security.deps import error_body, require_user
 from app.tools import schemas
 
@@ -47,10 +51,22 @@ def get_knowledge(request: Request):
     return getattr(request.app.state, "knowledge", None)
 
 
+def get_rate_limiter(request: Request):
+    """Redis rate limiter installed by the lifespan; AllowAll when unset (tests override this)."""
+    return getattr(request.app.state, "rate_limiter", None) or AllowAllRateLimiter()
+
+
+def get_audit_sink(request: Request):
+    """Audit sink installed by the lifespan; NullAuditSink when unset (tests override this)."""
+    return getattr(request.app.state, "audit_sink", None) or audit.NullAuditSink()
+
+
 # FastAPI-idiomatic Annotated dependencies (also keeps ruff B008 happy)
 UserClaims = Annotated[dict, Depends(require_user)]
 GraphDep = Annotated[Any, Depends(get_graph)]
 KnowledgeDep = Annotated[Any, Depends(get_knowledge)]
+RateLimiterDep = Annotated[Any, Depends(get_rate_limiter)]
+AuditSinkDep = Annotated[Any, Depends(get_audit_sink)]
 
 
 class MessageRequest(BaseModel):
@@ -98,6 +114,15 @@ async def create_session(claims: UserClaims) -> dict:
     return {"sessionId": sessions.create(claims.get("sub", ""))}
 
 
+def _sse_turn(turn, stage: str, awaiting: bool) -> dict:
+    payload = {
+        "turn": turn.model_dump(mode="json", by_alias=True) if turn else None,
+        "stage": stage,
+        "awaitingConfirm": awaiting,
+    }
+    return {"event": "turn", "data": json.dumps(payload, ensure_ascii=False)}
+
+
 @router.post("/{session_id}/messages")
 async def send_message(
     session_id: str,
@@ -106,55 +131,111 @@ async def send_message(
     claims: UserClaims,
     graph: GraphDep,
     knowledge: KnowledgeDep,
+    limiter: RateLimiterDep,
+    sink: AuditSinkDep,
 ):
-    _resolve(session_id, claims)
+    user_id = claims.get("sub", "")
     bearer = _bearer(request)
-    config = {"configurable": {"thread_id": session_id}}
+
+    # rate-limit (spam / cost) → hard 429; the limiter itself fails open if Redis is down (§11.3)
+    if not await limiter.allow(user_id):
+        raise HTTPException(
+            429,
+            detail=error_body("TOO_MANY_REQUESTS", "Bạn thao tác quá nhanh, thử lại sau giây lát."),
+        )
+
+    # session existence/TTL (→404/410) + per-session cost caps (turns/token → graceful stop)
+    try:
+        sessions.begin_turn(session_id, user_id, caps_from_settings())
+    except sessions.SessionNotFound as exc:
+        raise HTTPException(
+            404, detail=error_body("SESSION_NOT_FOUND", "Phiên không tồn tại")
+        ) from exc
+    except sessions.SessionExpired as exc:
+        raise HTTPException(
+            410, detail=error_body("SESSION_EXPIRED", "Phiên đã hết hạn — hãy mở phiên mới")
+        ) from exc
+    except LimitExceeded as exc:
+        reason = exc.reason  # capture: `exc` is unbound once the except block exits
+        log.warning("assistant.limit_exceeded", session_id=session_id, reason=reason)
+
+        async def stopped():
+            yield {"event": "node", "data": json.dumps({"node": "limit"})}
+            yield _sse_turn(limits.graceful_stop_turn(reason), "limit_reached", False)
+            yield {"event": "done", "data": "{}"}
+
+        return EventSourceResponse(stopped())
+
+    config = {
+        "configurable": {"thread_id": session_id},
+        "recursion_limit": get_settings().graph_recursion_limit,
+    }
+
+    async def _final_values() -> dict:
+        return (await get_thread_state(graph, session_id)).values
 
     async def gen():
         # the streaming body runs after the endpoint returns — re-set the auth context here
         from app.security.context import set_auth
 
         set_auth(bearer, claims)
-        try:
-            if await has_pending_interrupt(graph, session_id):
+        async with audit.record_run(
+            session_id=session_id,
+            user_id=user_id,
+            sink=sink,
+            get_final_values=_final_values,
+            input_text=body.text,
+        ):
+            try:
+                if await has_pending_interrupt(graph, session_id):
+                    snapshot = await get_thread_state(graph, session_id)
+                    stage = snapshot.values.get("stage")
+                    intent = snapshot.values.get("intent")
+                    # mixed-intent: a knowledge question while a proposal is pending → answer inline
+                    # WITHOUT resuming, so the interrupt stays and /confirm keeps working (§ Day 4)
+                    is_knowledge = classify_route(intent, stage, body.text) == "knowledge"
+                    if knowledge is not None and is_knowledge:
+                        values = await answer_knowledge_while_paused(snapshot, knowledge, body.text)
+                        yield {"event": "node", "data": json.dumps({"node": "knowledge"})}
+                        payload = _turn_payload(values, awaiting=True)
+                        yield {"event": "turn", "data": json.dumps(payload, ensure_ascii=False)}
+                        yield {"event": "done", "data": "{}"}
+                        return
+                    # otherwise free text is a non-confirm edit ("đổi qua 19h")
+                    resume = ConfirmDecision(confirmed=False, edits=body.text)
+                    stream_input: object = Command(resume=resume.model_dump())
+                else:
+                    stream_input = {
+                        "messages": [HumanMessage(content=body.text)],
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "jwt": bearer,
+                    }
+                async for chunk in graph.astream(stream_input, config, stream_mode="updates"):
+                    for node in chunk:
+                        if node != "__interrupt__":
+                            yield {"event": "node", "data": json.dumps({"node": node})}
                 snapshot = await get_thread_state(graph, session_id)
-                stage = snapshot.values.get("stage")
-                intent = snapshot.values.get("intent")
-                # mixed-intent: a knowledge question while a proposal is pending → answer inline
-                # WITHOUT resuming, so the interrupt stays and /confirm keeps working (§ Day 4)
-                is_knowledge = classify_route(intent, stage, body.text) == "knowledge"
-                if knowledge is not None and is_knowledge:
-                    values = await answer_knowledge_while_paused(snapshot, knowledge, body.text)
-                    yield {"event": "node", "data": json.dumps({"node": "knowledge"})}
-                    payload = _turn_payload(values, awaiting=True)
-                    yield {"event": "turn", "data": json.dumps(payload, ensure_ascii=False)}
-                    yield {"event": "done", "data": "{}"}
-                    return
-                # otherwise free text is a non-confirm edit ("đổi qua 19h")
-                resume = ConfirmDecision(confirmed=False, edits=body.text)
-                stream_input: object = Command(resume=resume.model_dump())
-            else:
-                stream_input = {
-                    "messages": [HumanMessage(content=body.text)],
-                    "session_id": session_id,
-                    "user_id": claims.get("sub", ""),
-                    "jwt": bearer,
+                payload = _turn_payload(snapshot.values, snapshot_has_interrupt(snapshot))
+                yield {"event": "turn", "data": json.dumps(payload, ensure_ascii=False)}
+                yield {"event": "done", "data": "{}"}
+            except GraphRecursionError:
+                # cost/loop cap tripped mid-stream → graceful stop, never crash (§11.3)
+                log.warning("assistant.recursion_limit", session_id=session_id)
+                yield _sse_turn(limits.graceful_stop_turn("recursion"), "error", False)
+                yield {"event": "done", "data": "{}"}
+            except Exception as exc:  # noqa: BLE001 — stream started; report, don't leak/ crash
+                # NOTE: do NOT put str(exc) in the client payload — it can carry internal detail.
+                log.error("assistant.stream_error", session_id=session_id, error=str(exc))
+                yield {
+                    "event": "error",
+                    "data": json.dumps(
+                        {
+                            "code": "AGENT_ERROR",
+                            "message": "Đã xảy ra lỗi khi xử lý. Vui lòng thử lại.",
+                        }
+                    ),
                 }
-            async for chunk in graph.astream(stream_input, config, stream_mode="updates"):
-                for node in chunk:
-                    if node != "__interrupt__":
-                        yield {"event": "node", "data": json.dumps({"node": node})}
-            snapshot = await get_thread_state(graph, session_id)
-            payload = _turn_payload(snapshot.values, snapshot_has_interrupt(snapshot))
-            yield {"event": "turn", "data": json.dumps(payload, ensure_ascii=False)}
-            yield {"event": "done", "data": "{}"}
-        except Exception as exc:  # noqa: BLE001 — stream already started; report, don't crash
-            log.error("assistant.stream_error", session_id=session_id, error=str(exc))
-            yield {
-                "event": "error",
-                "data": json.dumps({"code": "AGENT_ERROR", "message": str(exc)}),
-            }
 
     return EventSourceResponse(gen())
 
@@ -166,6 +247,7 @@ async def confirm(
     request: Request,
     claims: UserClaims,
     graph: GraphDep,
+    sink: AuditSinkDep,
 ) -> dict:
     _resolve(session_id, claims)
     if not await has_pending_interrupt(graph, session_id):
@@ -174,7 +256,13 @@ async def confirm(
             detail=error_body("NO_PENDING_PROPOSAL", "Không có đề xuất nào đang chờ xác nhận"),
         )
     result = await resume_confirm(
-        graph, session_id=session_id, bearer=_bearer(request), decision=decision, claims=claims
+        graph,
+        session_id=session_id,
+        bearer=_bearer(request),
+        decision=decision,
+        claims=claims,
+        user_id=claims.get("sub", ""),
+        sink=sink,
     )
     awaiting = await has_pending_interrupt(graph, session_id)
     payload = _turn_payload(result, awaiting)

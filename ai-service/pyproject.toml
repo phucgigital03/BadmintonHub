@@ -27,6 +27,8 @@ dependencies = [
     # --- Day 4: RAG (pgvector) + Postgres checkpointer connection pool ---
     "pgvector>=0.3",
     "psycopg-pool>=3.2",
+    # --- Day 6: rate-limit (rate_limit:ai:{userId}, fail-open) via redis.asyncio ---
+    "redis>=5.0",
     "structlog>=24.4",
     "opentelemetry-sdk",
     "opentelemetry-exporter-zipkin-json",

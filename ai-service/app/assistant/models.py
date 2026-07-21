@@ -36,9 +36,11 @@ class BookingIntent(BaseModel):
     time_to: time | None = None
     district: str | None = None
     sport: str | None = None
-    budget_max: int | None = None  # VND
-    duration_minutes: int | None = None
-    party_size: int | None = None
+    # Range-bounded (§11.2): reject garbage/injection ("ngân sách vô hạn" → absurd value). A legit
+    # high budget is still fine — the guardrail + human confirm are the real money gate, not this.
+    budget_max: int | None = Field(default=None, ge=0, le=100_000_000)  # VND
+    duration_minutes: int | None = Field(default=None, ge=0, le=1440)
+    party_size: int | None = Field(default=None, ge=0, le=100)
     club_id: UUID | None = None
     missing: list[str] = Field(default_factory=list)
 

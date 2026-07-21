@@ -18,6 +18,17 @@ from app.config import get_settings
 GEMINI_MODEL = "gemini-3.5-flash"
 
 
+def model_label(settings=None) -> str:
+    """The active model id — snapshotted to agent_run_log so a run is reproducible."""
+    s = settings or get_settings()
+    provider = s.llm_provider.lower()
+    if provider == "gemini":
+        return GEMINI_MODEL
+    if provider == "openai":
+        return "gpt-4o-mini"
+    return provider
+
+
 def get_chat_model() -> Any:
     """Build the configured chat model. Imported lazily so tests that inject a fake model
     (and CI without an API key) never import the provider SDK."""

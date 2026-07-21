@@ -22,7 +22,9 @@ class GeminiEmbedder:
     """Gemini embeddings (gemini-embedding-001, 768-dim). Lazily builds the client so importing
     this module never needs an API key (tests inject a fake and stay offline)."""
 
-    def __init__(self, model: str | None = None, api_key: str | None = None, dim: int | None = None):
+    def __init__(
+        self, model: str | None = None, api_key: str | None = None, dim: int | None = None
+    ):
         settings = get_settings()
         self._model = model or settings.embedding_model
         self._api_key = api_key or settings.gemini_api_key

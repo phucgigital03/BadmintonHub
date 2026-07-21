@@ -10,6 +10,7 @@ calls the payment /confirm endpoint; confirming money stays with STAFF in the ol
 
 from __future__ import annotations
 
+import asyncio
 import unicodedata
 from datetime import date
 
@@ -18,9 +19,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.graph import END
 from langgraph.types import Command, interrupt
 
+from app.assistant import audit, prompts, vi_parse
 from app.assistant import guardrail as checks
 from app.assistant import preferences as prefs_mod
-from app.assistant import prompts, vi_parse
 from app.assistant.knowledge import KnowledgeHit
 from app.assistant.models import AgentState, AgentTurn, BookingIntent, ConfirmDecision
 from app.assistant.ranker import RankResult, rank
@@ -34,7 +35,6 @@ log = structlog.get_logger(__name__)
 
 # Criteria the user MUST supply before we search — missing → ask, never fabricate.
 MANDATORY = ["sport", "date", "time_from", "time_to"]
-MAX_REACT_STEPS = 3
 
 _CLARIFY_PROMPTS = {
     "sport": "Bạn muốn đặt môn nào — Pickleball hay Badminton?",
@@ -221,9 +221,17 @@ class AssistantNodes:
             return BookingIntent()
         try:
             structured = self.model.with_structured_output(BookingIntent)
-            result = await structured.ainvoke(
-                [SystemMessage(content=prompts.perceive_system(today)), HumanMessage(content=text)]
+            # §11.2 — user text goes in as DATA inside delimiters, not as instructions.
+            result = await asyncio.wait_for(
+                structured.ainvoke(
+                    [
+                        SystemMessage(content=prompts.perceive_system(today)),
+                        HumanMessage(content=prompts.wrap_user_text(text)),
+                    ]
+                ),
+                timeout=get_settings().llm_timeout_seconds,
             )
+            audit.note_tokens(max(1, len(text) // 4))  # structured output loses usage → estimate
             intent = (
                 result
                 if isinstance(result, BookingIntent)
@@ -231,7 +239,8 @@ class AssistantNodes:
             )
             intent.missing = []
             return intent
-        except Exception as exc:  # noqa: BLE001 — LLM parse is best-effort; deterministic still applies
+        except Exception as exc:  # noqa: BLE001 — LLM parse (incl. timeout) is best-effort;
+            # deterministic vi_parse still applies, so the concierge degrades, never crashes.
             # ERROR (not warning): a dead/out-of-quota key silently degrades the assistant —
             # this is the platform's alert channel (alert on ERROR logs). Log exc_type too so
             # an integration bug (KeyError/TypeError) is not misread as "the LLM is down".
@@ -344,19 +353,34 @@ class AssistantNodes:
             # mixed-intent: the agent can also answer a passing knowledge question in-flow
             tools = READ_TOOLS + ([search_knowledge] if self.knowledge_svc is not None else [])
             llm = self.model.bind_tools(tools)
+            settings = get_settings()
+            tool_calls_made = 0  # total across iterations — cost/loop cap (§11.3)
             try:
-                for _ in range(MAX_REACT_STEPS):
-                    ai = await llm.ainvoke(convo)
+                for _ in range(settings.max_react_steps):
+                    ai = await asyncio.wait_for(
+                        llm.ainvoke(convo), timeout=settings.llm_timeout_seconds
+                    )
+                    audit.note_tokens(getattr(ai, "usage_metadata", None))
                     convo.append(ai)
                     tool_calls = getattr(ai, "tool_calls", None) or []
                     if not tool_calls:
                         break
+                    stop = False
+                    cap = settings.max_tool_calls_per_turn
                     for call in tool_calls:
+                        if tool_calls_made >= cap:
+                            log.warning("agent.tool_cap_reached", cap=cap)
+                            stop = True
+                            break
+                        tool_calls_made += 1
                         typed, content = await self._run_tool(call)
                         if typed is not None:
                             collected = typed
                         convo.append(ToolMessage(content=content, tool_call_id=call["id"]))
-            except Exception as exc:  # noqa: BLE001 — LLM planning is best-effort; the direct
+                    if stop:
+                        break
+            except Exception as exc:  # noqa: BLE001 — LLM planning (incl. timeout) is best-effort;
+                # the direct
                 # grid read below still serves the deterministic path (LLM down ≠ service down).
                 # ERROR + exc_type so a broken key surfaces on the alert channel, and an
                 # integration bug isn't misattributed to the LLM being down.
@@ -389,10 +413,15 @@ class AssistantNodes:
                 log.warning("agent.knowledge_error", exc_type=type(exc).__name__)
                 return None, '{"error": "KNOWLEDGE_UNAVAILABLE"}'
         try:
-            return await execute_tool_call(name, args)
+            return await asyncio.wait_for(
+                execute_tool_call(name, args), timeout=get_settings().tool_timeout_seconds
+            )
         except ToolError as exc:
             log.warning("agent.tool_error", tool=name, code=exc.code)
             return None, f'{{"error": "{exc.code}"}}'
+        except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041 — tool call hard-capped
+            log.warning("agent.tool_timeout", tool=name, exc_type=type(exc).__name__)
+            return None, '{"error": "TOOL_TIMEOUT"}'
 
     # --- rank + propose (CODE) --------------------------------------------------
     async def rank_propose(self, state: AgentState) -> dict:

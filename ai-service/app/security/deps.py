@@ -10,10 +10,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import structlog
 from fastapi import HTTPException, Request
 
 from app.security import jwt
 from app.security.context import set_auth
+
+log = structlog.get_logger(__name__)
 
 
 def error_body(code: str, message: str) -> dict:
@@ -29,6 +32,10 @@ async def require_user(request: Request) -> dict:
     try:
         claims = jwt.verify(token)
     except jwt.JwtError as exc:
-        raise HTTPException(401, detail=error_body("TOKEN_INVALID", str(exc))) from exc
+        # log the detail server-side, return a generic client message (don't leak internals)
+        log.warning("auth.token_invalid", error=str(exc))
+        raise HTTPException(
+            401, detail=error_body("TOKEN_INVALID", "Token không hợp lệ")
+        ) from exc
     set_auth(token, claims)
     return claims

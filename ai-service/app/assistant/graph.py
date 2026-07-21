@@ -9,11 +9,14 @@ checkpointer replaces MemorySaver on Day 4.
 
 from __future__ import annotations
 
+import structlog
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, StateSnapshot
 
+from app.assistant import audit, limits
 from app.assistant.models import AgentState, ConfirmDecision
 from app.assistant.nodes import (
     AssistantNodes,
@@ -23,7 +26,10 @@ from app.assistant.nodes import (
     gate,
     route_decision,
 )
+from app.config import get_settings
 from app.security.context import set_auth
+
+log = structlog.get_logger(__name__)
 
 # How many recent messages the LLM prompts should keep (windowing prep; summarization = Day 4).
 RECENT_WINDOW = 12
@@ -102,7 +108,12 @@ def recent_messages(state: AgentState, n: int = RECENT_WINDOW) -> list:
 
 
 def _config(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
+    # recursion_limit caps the self-looping money path (guardrail↔agent↔human_review) so a
+    # runaway can't burn tokens forever (§11.3). Over it → GraphRecursionError → graceful stop.
+    return {
+        "configurable": {"thread_id": session_id},
+        "recursion_limit": get_settings().graph_recursion_limit,
+    }
 
 
 async def run_turn(
@@ -114,30 +125,51 @@ async def run_turn(
     user_id: str = "",
     claims: dict | None = None,
     knowledge=None,
+    sink=None,
 ) -> AgentState:
     """Run one conversational turn. Sets the auth context so tools forward the user JWT.
 
     If the thread is paused at human_review, free text normally resumes it as a non-confirm
     edit ("đổi qua 19h"). But a MIXED-INTENT knowledge question mid-await ("hủy trước 2 tiếng
     có hoàn?") must be answered WITHOUT resuming — the proposal stays pending and /confirm keeps
-    working (§ Day 4). Otherwise it's one single path through the graph.
+    working (§ Day 4). Otherwise it's one single path through the graph. Wrapped in an audit
+    recorder (Day 6) — pass a `sink` to persist the run snapshot.
     """
     set_auth(bearer, claims or {})
-    if await has_pending_interrupt(graph, session_id):
-        snapshot = await get_thread_state(graph, session_id)
-        stage = snapshot.values.get("stage")
-        intent = snapshot.values.get("intent")
-        if knowledge is not None and classify_route(intent, stage, text) == "knowledge":
-            return await answer_knowledge_while_paused(snapshot, knowledge, text)
-        resume = ConfirmDecision(confirmed=False, edits=text)
-        return await graph.ainvoke(Command(resume=resume.model_dump()), _config(session_id))
-    inputs: dict = {
-        "messages": [HumanMessage(content=text)],
-        "session_id": session_id,
-        "user_id": user_id,
-        "jwt": bearer,
-    }
-    return await graph.ainvoke(inputs, _config(session_id))
+    audit_sink = sink or audit.NullAuditSink()
+
+    async def _final_values() -> dict:
+        return (await get_thread_state(graph, session_id)).values
+
+    async with audit.record_run(
+        session_id=session_id,
+        user_id=user_id,
+        sink=audit_sink,
+        get_final_values=_final_values,
+        input_text=text,
+    ):
+        try:
+            if await has_pending_interrupt(graph, session_id):
+                snapshot = await get_thread_state(graph, session_id)
+                stage = snapshot.values.get("stage")
+                intent = snapshot.values.get("intent")
+                if knowledge is not None and classify_route(intent, stage, text) == "knowledge":
+                    return await answer_knowledge_while_paused(snapshot, knowledge, text)
+                resume = ConfirmDecision(confirmed=False, edits=text)
+                return await graph.ainvoke(
+                    Command(resume=resume.model_dump()), _config(session_id)
+                )
+            inputs: dict = {
+                "messages": [HumanMessage(content=text)],
+                "session_id": session_id,
+                "user_id": user_id,
+                "jwt": bearer,
+            }
+            return await graph.ainvoke(inputs, _config(session_id))
+        except GraphRecursionError:
+            # cost/loop cap tripped — stop politely, never crash (§11.3)
+            log.warning("run_turn.recursion_limit", session_id=session_id)
+            return {"turn": limits.graceful_stop_turn("recursion"), "stage": "error"}
 
 
 async def answer_knowledge_while_paused(
@@ -164,10 +196,29 @@ async def resume_confirm(
     bearer: str,
     decision: ConfirmDecision,
     claims: dict | None = None,
+    user_id: str = "",
+    sink=None,
 ) -> AgentState:
-    """Resume a thread paused at human_review with the user's decision (§9 /confirm)."""
+    """Resume a thread paused at human_review with the user's decision (§9 /confirm). Audited."""
     set_auth(bearer, claims or {})
-    return await graph.ainvoke(Command(resume=decision.model_dump()), _config(session_id))
+    audit_sink = sink or audit.NullAuditSink()
+
+    async def _final_values() -> dict:
+        return (await get_thread_state(graph, session_id)).values
+
+    label = "confirm" if decision.confirmed else (decision.edits or "decline")
+    async with audit.record_run(
+        session_id=session_id,
+        user_id=user_id,
+        sink=audit_sink,
+        get_final_values=_final_values,
+        input_text=label,
+    ):
+        try:
+            return await graph.ainvoke(Command(resume=decision.model_dump()), _config(session_id))
+        except GraphRecursionError:
+            log.warning("resume_confirm.recursion_limit", session_id=session_id)
+            return {"turn": limits.graceful_stop_turn("recursion"), "stage": "error"}
 
 
 async def get_thread_state(graph, session_id: str) -> StateSnapshot:

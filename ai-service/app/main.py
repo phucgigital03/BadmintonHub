@@ -6,6 +6,7 @@ OTel→Zipkin, Eureka registration in the lifespan.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -14,6 +15,8 @@ from fastapi.responses import JSONResponse
 
 from app import eureka
 from app.api.assistant import router as assistant_router
+from app.assistant import audit, sessions
+from app.assistant.rate_limit import RedisRateLimiter, build_redis_client
 from app.config import get_settings
 from app.logging import configure_logging, get_logger
 from app.observability import configure_observability
@@ -32,10 +35,65 @@ async def lifespan(app: FastAPI):
     )
     await eureka.register()
     await _setup_graph(app, settings)
+    _setup_hardening(app, settings)
+    app.state.sweeper = asyncio.create_task(_session_sweeper(settings))
     yield
+    await _teardown(app)
     await _teardown_graph(app)
     await eureka.deregister()
     log.info("ai-service.stopped")
+
+
+def _setup_hardening(app: FastAPI, settings) -> None:
+    """Install the Day-6 collaborators the endpoints read from app.state (§11)."""
+    app.state.audit_sink = audit.SqlAuditSink()
+    try:
+        app.state.redis = build_redis_client(settings.redis_url)
+        app.state.rate_limiter = RedisRateLimiter(
+            app.state.redis, limit=settings.ai_rate_limit_per_minute
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade: no Redis → AllowAll (fail-open), stay up
+        log.error("rate_limit.redis_init_failed", exc_type=type(exc).__name__, error=str(exc))
+        app.state.redis = None
+        app.state.rate_limiter = None
+
+
+async def _session_sweeper(settings) -> None:
+    """Periodically evict expired sessions (retention/PII §11.6) and purge their checkpointer
+    thread state. Bounds in-memory growth; an expired session already 404/410s on access."""
+    while True:
+        try:
+            await asyncio.sleep(settings.session_sweep_interval_seconds)
+            expired = sessions.sweep()
+            if not expired:
+                continue
+            from app.assistant.graph import get_default_graph
+
+            checkpointer = getattr(get_default_graph(), "checkpointer", None)
+            for sid in expired:
+                if checkpointer is not None and hasattr(checkpointer, "adelete_thread"):
+                    try:
+                        await checkpointer.adelete_thread(sid)
+                    except Exception as exc:  # noqa: BLE001 — thread purge is best-effort
+                        log.warning("session_sweeper.thread_purge_failed", error=str(exc))
+            log.info("session_sweeper.evicted", count=len(expired))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — the sweeper must never die on a transient error
+            log.error("session_sweeper.error", exc_type=type(exc).__name__, error=str(exc))
+
+
+async def _teardown(app: FastAPI) -> None:
+    task = getattr(app.state, "sweeper", None)
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    redis = getattr(app.state, "redis", None)
+    if redis is not None:
+        await redis.aclose()
 
 
 async def _setup_graph(app: FastAPI, settings) -> None:

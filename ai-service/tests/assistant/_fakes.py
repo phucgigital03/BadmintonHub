@@ -93,3 +93,45 @@ class FakePreferenceStore:
 
     async def upsert(self, user_id: str, snapshot: PreferenceSnapshot) -> None:
         self._data[user_id] = snapshot
+
+
+# --- Day 6 fakes (rate limiter · audit sink) -------------------------------------------
+
+
+class FakeRateLimiter:
+    """Deterministic limiter — `allowed` controls the verdict; records the users it saw."""
+
+    def __init__(self, allowed: bool = True):
+        self.allowed = allowed
+        self.calls: list[str] = []
+
+    async def allow(self, user_id: str) -> bool:
+        self.calls.append(user_id)
+        return self.allowed
+
+
+class FakeAuditSink:
+    """Captures the agent_run_log rows in memory so a test can assert them (no DB)."""
+
+    def __init__(self):
+        self.rows: list[dict] = []
+
+    async def write(self, row: dict) -> None:
+        self.rows.append(row)
+
+
+class FakeRedis:
+    """Minimal async redis double for RedisRateLimiter — counts incr; optionally raises."""
+
+    def __init__(self, *, raises: bool = False):
+        self._counts: dict[str, int] = {}
+        self._raises = raises
+
+    async def incr(self, key: str) -> int:
+        if self._raises:
+            raise RuntimeError("redis down (simulated)")
+        self._counts[key] = self._counts.get(key, 0) + 1
+        return self._counts[key]
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return True

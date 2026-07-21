@@ -45,11 +45,30 @@ class Settings(BaseSettings):
     gateway_url: str = "http://localhost:3000"
     http_timeout_seconds: float = 10.0
 
+    # --- Redis (Day 6 · rate-limit rate_limit:ai:{userId}; fail-open like BookingRateLimiter) ---
+    redis_url: str = "redis://localhost:6379/0"
+    ai_rate_limit_per_minute: int = 20
+
+    # --- Cost / loop caps (Day 6 · §11.3) — every LLM/tool call costs money, so cap everything.
+    #     Tests set these tiny to force a stop; over-limit → graceful turn / escalate. ---
+    graph_recursion_limit: int = 15  # passed to graph.ainvoke/astream config
+    max_react_steps: int = 3  # ReAct iterations per turn (was the MAX_REACT_STEPS constant)
+    max_tool_calls_per_turn: int = 6  # total tool executions across all ReAct iterations
+    max_turns_per_session: int = 40
+    token_budget_per_session: int = 200_000
+    llm_timeout_seconds: float = 25.0  # per LLM call (asyncio.wait_for)
+    tool_timeout_seconds: float = 12.0  # per tool call — hard ceiling over httpx's own 10s
+
     # --- Auth: shared HS256 secret with the rest of the platform (no default → fail fast) ---
     jwt_secret: str
 
-    # --- Assistant sessions (in-memory Day 3; Day 6 syncs the TTL with PII retention) ---
+    # --- Assistant sessions + PII retention (Day 6 · §11.6) ---
+    #  session TTL = the live checkpointer thread lifetime = the transcript retention window;
+    #  an expired session → GET /{id} 404/410 (the FE A→B fallback of Day 5). The periodic
+    #  sweeper evicts expired sessions AND purges their checkpointer thread state.
     session_ttl_minutes: int = 1440
+    transcript_retention_minutes: int = 1440  # kept == session_ttl_minutes (documented, PII policy)
+    session_sweep_interval_seconds: int = 300
 
     # --- Service discovery ---
     eureka_url: str = "http://localhost:8761/eureka/"
