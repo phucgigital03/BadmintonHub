@@ -393,7 +393,7 @@ export function AiBookingWidget() {
               onChange={(e) => setDraft(e.target.value)}
               disabled={!sessionId || sending || booting}
               placeholder="Nhập yêu cầu đặt sân…"
-              className="min-w-0 flex-1 rounded-full border border-gray-200 px-3 py-2 text-sm outline-none focus:border-brand-gold disabled:bg-gray-100"
+              className="min-w-0 flex-1 rounded-full border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-brand-gold disabled:bg-gray-100"
             />
             <button
               type="submit"
