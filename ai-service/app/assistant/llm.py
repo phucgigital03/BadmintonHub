@@ -26,6 +26,8 @@ def model_label(settings=None) -> str:
         return GEMINI_MODEL
     if provider == "openai":
         return "gpt-4o-mini"
+    if provider == "ollama":
+        return s.ollama_model
     return provider
 
 
@@ -42,10 +44,30 @@ def get_chat_model() -> Any:
             model=GEMINI_MODEL,
             temperature=0,
             google_api_key=settings.gemini_api_key,
+            # Surface the REAL failure instead of a bare, message-less TimeoutError: give the
+            # client its own request timeout and cap silent retries so a 429/network/key error
+            # propagates fast (and gets logged by perceive.llm_parse_failed) rather than being
+            # retried until the outer asyncio.wait_for cap fires.
+            timeout=settings.llm_timeout_seconds,
+            max_retries=2,
         )
     if provider == "openai":
         from langchain_openai import ChatOpenAI  # optional, only if installed
 
         return ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=settings.openai_api_key)
+    if provider == "ollama":
+        # Local self-host (Ollama). qwen2.5:3b has native tool-calling for the ReAct agent
+        # node, and Ollama's structured-output support backs with_structured_output in perceive.
+        # Both node call-sites already fall back deterministically, so a small local model
+        # degrades slot-filling quality gracefully — it never breaks the booking flow.
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(
+            model=settings.ollama_model,
+            base_url=settings.ollama_base_url,
+            temperature=0,
+            num_ctx=settings.ollama_num_ctx,
+            keep_alive="30m",  # keep the model resident so turns after the first stay fast
+        )
 
     raise ValueError(f"Unsupported LLM_PROVIDER: {settings.llm_provider}")

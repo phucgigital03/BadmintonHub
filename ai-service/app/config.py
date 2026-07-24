@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     gemini_api_key: str = "FILL_IN"
     openai_api_key: str = "FILL_IN"
 
+    # --- Ollama (local self-host · qwen2.5:3b; PII never leaves the machine) ---
+    # LLM_PROVIDER=ollama routes get_chat_model() here. keep_alive/num_ctx set in llm.py.
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:3b"
+    ollama_num_ctx: int = 8192
+
     # --- RAG (Day 4): Gemini embeddings over pgvector on ai_db ---
     # Pinned to gemini-embedding-001 (stable GA) at 768 dims — text-embedding-004 was removed
     # for new keys (same story as gemini-3.5-flash). Pin one GA model (no -preview) so the

@@ -6,6 +6,7 @@ import httpx
 import respx
 
 from app.assistant.graph import build_graph, run_turn
+from app.assistant.llm import model_label
 from app.assistant.models import BookingIntent
 from tests.assistant._fakes import FakeAuditSink, FakeModel
 from tests.assistant.test_graph import _grid_window
@@ -38,8 +39,9 @@ async def test_run_writes_full_audit_row_with_masked_phone():
     assert len(sink.rows) == 1
     row = sink.rows[0]
 
-    # model + prompt version snapshot (reproducibility)
-    assert row["model"] == "gemini-3.5-flash"
+    # model + prompt version snapshot (reproducibility) — the active provider's label,
+    # not a hardcoded one, so this holds under any LLM_PROVIDER (gemini / ollama / ...).
+    assert row["model"] == model_label()
     assert row["prompt_version"] == "day6-hardened-v1"
     # outcome + latency
     assert row["decision"] == "proposed"

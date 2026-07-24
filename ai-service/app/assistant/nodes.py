@@ -219,6 +219,10 @@ class AssistantNodes:
     async def _llm_parse(self, text: str, today: date) -> BookingIntent:
         if self.model is None:
             return BookingIntent()
+        # observability: what the perceive step actually sends to the LLM. INFO so it survives the
+        # level filter (main.py hard-codes INFO). `user_text` is not a _PII_KEYS key, so it prints
+        # verbatim — only VN-phone-like digit runs are masked by the redact_pii processor.
+        log.info("perceive.llm_input", user_text=text, timeout_s=get_settings().llm_timeout_seconds)
         try:
             structured = self.model.with_structured_output(BookingIntent)
             # §11.2 — user text goes in as DATA inside delimiters, not as instructions.
