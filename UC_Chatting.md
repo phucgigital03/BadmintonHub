@@ -870,3 +870,128 @@ msg.ensureIndex(new Index().on("conversationId", ASC).on("_id", DESC));         
 5. **`CLOUDINARY_*`** đủ (prod guard chặn boot nếu thiếu) (G.4).
 6. **Origin handshake = `FRONTEND_URL`** (G.1) + token mid-session reconnect (G.2).
 7. **Reconcile job** unread (G.5) + multi-device fan-out qua `convertAndSendToUser` (G.6) đã chạy.
+
+---
+
+## H. Rút kinh nghiệm cho fresher — kỹ thuật đã áp dụng & bài học mang đi
+
+> Feature chat này là một **"tour thu nhỏ"** của real-time engineering production-grade: nó chạm gần như đủ các
+> lĩnh vực bạn sẽ gặp lại ở project sau (transport real-time · concurrency · bảo mật · độ tin cậy · mô hình dữ
+> liệu · frontend · testing). Mục này **rút các kỹ thuật ra khỏi feature** để bạn mang đi tái dùng — khác §D
+> (map UC→pattern) và §G (checklist hardening). Mỗi dòng: **tên chuẩn ngành · áp dụng ở đâu (mở file thật để
+> đọc) · vấn đề nó giải + bài học mang đi · 🔎 từ khoá để tự Google đào sâu**.
+>
+> **Bản đồ file** (để mở đọc kèm): Java chat-service ở `chat-service/src/main/java/com/badmintonhub/chat/` ·
+> gateway ở `api-gateway/src/main/java/com/badmintonhub/gateway/` · frontend ở `frontend/src/` · test ở
+> `chat-service/src/test/java/com/badmintonhub/chat/`.
+
+### H.1 Real-time transport & messaging
+| Kỹ thuật (tên chuẩn) | Áp dụng ở đây | Vấn đề giải → bài học mang đi | 🔎 |
+|---|---|---|---|
+| **STOMP over WebSocket + per-user queue** | `config/WebSocketConfig` · `realtime/ChatRealtimePublisher` (`convertAndSendToUser(user,"/queue/messages",…)`) | Đẩy tin real-time **đích danh 1 người** mà KHÔNG tự quản map socket↔user (Spring lo). Bài học: chọn protocol có sẵn pub/sub + user-destination thay vì tự viết trên raw WebSocket. | pub/sub, per-user queue |
+| **External broker relay (scale ngang, no-sticky)** | `WebSocketConfig.configureMessageBroker` — `enableStompBrokerRelay` + `setUserRegistryBroadcast`, bật/tắt qua `app.broker.relay` | 1 WebSocket "pin" 1 instance suốt đời → nhiều instance cần fan-out **cross-instance**. Broker dùng chung + user-registry broadcast = **không cần sticky session**. Bài học: đẩy state real-time ra broker ngoài process để service stateless & scale. | message broker, sticky session, horizontal scaling |
+| **Hybrid REST-persist + WS-push** | gửi tin qua `controller/ChatController.send` (REST: authz+validate+**persist**) · `controller/ChatStompController` chỉ nhận `delivered`/`typing` | Đừng cho đường ghi dữ liệu quan trọng đi qua WS (khó authz/validate, dễ nhân đôi). Bài học: **1 đường ghi (REST) làm nguồn sự thật, WS chỉ vận chuyển** → giảm blast-radius lỗi. | CQS, command/query separation |
+| **Application- vs broker-destination** | `/app/**` → `@MessageMapping` (xử lý trong service) · `/topic`,`/queue` → ra broker | Biết frame nào ra broker (tốn network, fan-out) vs xử lý tại chỗ. Bài học: nắm ranh giới để tối ưu & debug real-time. | destination prefix, routing |
+
+### H.2 Concurrency & data-integrity
+| Kỹ thuật (tên chuẩn) | Áp dụng ở đây | Vấn đề giải → bài học mang đi | 🔎 |
+|---|---|---|---|
+| **Compare-and-set / atomic conditional update** | `service/impl/ChatServiceImpl.claim/close/transfer/release` — `findAndModify` với filter mang **trạng thái kỳ vọng**, `modifiedCount==0`→409 | read→check→save bị 2 request đua (2 STAFF cùng claim → lost update). Bài học: đổi trạng thái = **1 update có điều kiện** (để DB quyết winner), KHÔNG đọc-rồi-ghi. Đây là bản Mongo của `SELECT…FOR UPDATE`. | CAS, optimistic concurrency, lost update |
+| **Idempotency key + DB-unique là chốt thật** | `clientMsgId` unique (`config/ChatIndexInitializer`) · check ở service chỉ là fast-path | Retry mạng gửi trùng tin. Bài học: mọi thao tác "tạo" cần **khoá idempotent**, và **chốt cuối phải ở DB (unique index)** — check ở app luôn có cửa sổ race. | idempotency, idempotency key, unique constraint |
+| **DuplicateKey → re-read → trả bản ghi cũ (200)** | `ChatServiceImpl.ensureOpen` & `persistAndPush` bắt `DuplicateKeyException` → re-read → trả cũ | Guard nổ đúng lúc race KHÔNG nên thành 500. Bài học: exception của DB-constraint là **luồng bình thường** của idempotency — xử lý mềm, không để 500. | idempotent API |
+| **Denormalized counter (badge O(1))** | `entity/Conversation` `staffUnread`/`customerUnread` | Đếm unread bằng `COUNT(*)` mỗi lần render = chậm. Bài học: tính sẵn để đọc O(1) — đánh đổi là phải reconcile drift (§H.4). | denormalization |
+| **Chọn kiểu `_id` có chủ đích** | `entity/Message.@Id ObjectId` (đơn điệu → làm cursor) vs `entity/Conversation.@Id UUID` | ObjectId chứa timestamp → free time-order + làm cursor keyset; UUID ngẫu nhiên sẽ **vỡ cursor**. Bài học: kiểu khoá chính là quyết định thiết kế, không mặc định theo thói quen. | monotonic id, ObjectId, ULID |
+
+### H.3 Security (defense-in-depth trên WebSocket)
+| Kỹ thuật (tên chuẩn) | Áp dụng ở đây | Vấn đề giải → bài học mang đi | 🔎 |
+|---|---|---|---|
+| **Auth đúng biên (CONNECT-frame)** | `security/StompAuthChannelInterceptor.authenticate` · gateway `filter/JwtAuthenticationFilter` để `/ws/**` trong `PUBLIC_PATHS` | Browser KHÔNG gắn được `Authorization` lên WS handshake → gateway không auth được. Bài học: đặt cổng auth **ở nơi token thật sự tới** (CONNECT frame), đừng cố gác chỗ không có token. | WebSocket auth, handshake |
+| **Authz per-frame** | `authorizeSubscribe` (staff-queue chỉ STAFF/ADMIN) · `authorizeSend` (participant-check) | Auth ở CONNECT chỉ biết *ai*; mỗi SUBSCRIBE/SEND vẫn phải hỏi *được phép không* (chống spoof `delivered`/`typing` cho thread lạ). Bài học: **authentication ≠ authorization**; authz phải per-action. | authn vs authz, IDOR |
+| **Hot-path authz cache** | `realtime/ChatParticipantResolver` (TTL 30s, cache vào STOMP session attribute) | typing bắn mỗi phím → query Mongo mỗi frame = chết DB. Bài học: authz nằm trên hot-path thì **cache có kiểm soát + invalidate** khi đổi chủ (transfer/release). | cache invalidation |
+| **Token lifecycle trên kết nối dài** | `realtime/WebSocketSessionTracker.scheduleClose` (đóng ở `exp`) · FE `lib/stompClient.ts` bắt close **1008** → silent-refresh | Access TTL 15' < đời socket → token chết mà socket vẫn sống. Bài học: kết nối dài phải **chủ động cắt ở `exp`** + client tự refresh-reconnect. | token expiry, session lifecycle |
+| **Defense-in-depth** | `security/JwtAuthFilter` re-validate JWT ở service, **KHÔNG tin** header `X-User-Id` | Gateway auth rồi service vẫn re-validate. Bài học: **đừng tin biên trước**; identity chỉ đến từ token đã verify. | defense in depth, zero trust |
+| **XSS escape-on-render + input hardening** | FE `features/chat/ChatThread` render React text (không `innerHTML`) · `dto/request/SendMessageRequest` `@NotBlank @Size(2000)` · MIME allowlist png/jpeg/webp + 5MB | Nội dung user nhập = không tin được. Bài học: **lưu raw, escape khi render**; validate size/type ở CẢ FE lẫn BE. | stored XSS, allowlist, least privilege |
+
+### H.4 Reliability & failure handling
+| Kỹ thuật (tên chuẩn) | Áp dụng ở đây | Vấn đề giải → bài học mang đi | 🔎 |
+|---|---|---|---|
+| **Best-effort side-effect (persist-first)** | `ChatServiceImpl.persistAndPush` persist Mongo TRƯỚC → `realtime/ChatRealtimePublisher.toUser/broadcast` bọc try/catch | Broker chết KHÔNG được làm hỏng đường gửi tin. Bài học: ghi **nguồn-sự-thật trước**, mọi push/notify là best-effort; người nhận lấy lại qua history-sync (§G.6). | source of truth, at-least-once |
+| **Reconcile job sửa drift** | `scheduler/UnreadReconcileScheduler` recompute unread từ `messages` | 2 ghi tách rời (insert message + bump counter) trên Mongo standalone (không multi-doc txn) → lệch. Bài học: **denormalized data cần job đối soát định kỳ**. | reconciliation, eventual consistency |
+| **Fail-open vs fail-closed (có chủ đích)** | `service/ChatRateLimiter` Redis chết → cho qua (**fail-open**); so với reset-password của user-service **fail-closed** | Redis chết KHÔNG nên chặn cả tính năng chat. Bài học: chọn hướng fail **theo mức rủi ro** — rate-limit fail-open, security fail-closed. | fail-open, fail-closed, graceful degradation |
+| **Fail-fast config vs graceful degrade** | `config/CloudinaryProdGuard @Profile("prod")` chặn boot khi thiếu key · dev degrade `local-fallback://` | Prod thiếu secret phải **nổ ngay lúc khởi động**, không âm thầm lưu ảnh giả. Bài học: sai cấu hình nghiêm trọng → fail-fast ở prod; dev thì degrade cho chạy được. | fail-fast, 12-factor config |
+
+### H.5 MongoDB data modeling
+| Kỹ thuật (tên chuẩn) | Áp dụng ở đây | Vấn đề giải → bài học mang đi | 🔎 |
+|---|---|---|---|
+| **One-doc-per-message** | 2 collection `conversations` + `messages` (§F.1) | Embed mảng tin vào conversation → vỡ 16MB (Unbounded Array) + ghi lại cả doc mỗi tin. Bài học: dữ liệu tăng vô hạn → **tách collection, tham chiếu**. | unbounded array antipattern, 16MB limit |
+| **Keyset (cursor) pagination** | `ChatServiceImpl.getMessages` — cursor=`_id`, `_id < before` (§F.4) | `skip(n)` là O(n), chậm dần khi cuộn lịch sử dài. Bài học: phân trang list dài dùng **cursor**, không offset. | keyset pagination, cursor |
+| **Index = hợp đồng, tạo tường minh** | `config/ChatIndexInitializer` (`CommandLineRunner @Order(0)`) — partial & partial-unique (§F.7) | Repo không có tiền lệ Mongo index → quên tạo thì unique guard **âm thầm biến mất**. Bài học: index quan trọng phải được tạo **có kiểm soát**, không phó mặc auto. | partial index, index as contract |
+| **MongoDB "Building with Patterns"** | Computed (`*Unread`,`lastMessageAt`) · Extended-Reference (snapshot `customerName`) · Subset (`lastMessagePreview`) (§F.3) | No-FK cross-service → snapshot để render không join. Bài học: chọn pattern schema theo **hot-query**, chấp nhận stale có kiểm soát. | schema design patterns |
+| **Scale path adopt-when** | §F.6 Bucket / shard / replica-set để backlog kèm ngưỡng | Đừng shard cho pilot 1 CLB. Bài học: viết sẵn **lộ trình scale + ngưỡng adopt**, chỉ bật khi chạm ngưỡng. | sharding, replica set, right-sizing |
+
+### H.6 Frontend real-time
+| Kỹ thuật (tên chuẩn) | Áp dụng ở đây | Vấn đề giải → bài học mang đi | 🔎 |
+|---|---|---|---|
+| **Singleton connection + ref-count** | `lib/stompClient.ts` `retainChatSocket`/`releaseChatSocket` · hook `hooks/useChatSocket` | Nhiều component cùng cần WS → mở nhiều socket trùng. Bài học: **1 kết nối/tab, đếm tham chiếu**, tắt khi về 0. | singleton, reference counting |
+| **Optimistic UI + reconcile theo `clientMsgId`** | `features/chat/ChatThread` optimistic append, dedupe theo `id`/`clientMsgId` | Chờ server round-trip mới hiện tin = lag. Bài học: render ngay (optimistic), khi server echo về thì **reconcile theo khoá idempotent**. | optimistic update |
+| **Reconnect → history-sync** | `onChatConnected(loadHistory)` + keyset "load older" + ACK delivered bù | Mạng chớp → mất tin lúc offline. Bài học: sau reconnect **luôn kéo lại từ nguồn sự thật**, không tin cache local. | reconnect, resync |
+| **Silent token refresh trên close 1008** | `stompClient.ts` `onWebSocketClose` set `needsRefresh` · `beforeConnect` await `refreshAccessToken` | Server đóng vì token hết hạn → phải làm mượt, không bắt user login lại. Bài học: **nối lại session trong suốt** với user. | silent refresh |
+| **Derived state (3-state ticks)** | `ChatThread.Ticks` suy từ `readAt`/`deliveredAt` | Không cần cột status riêng cho từng mốc. Bài học: **derive state** từ dữ liệu đã có thay vì thêm field trùng lặp. | derived state |
+
+### H.7 Testing
+| Kỹ thuật (tên chuẩn) | Áp dụng ở đây | Vấn đề giải → bài học mang đi | 🔎 |
+|---|---|---|---|
+| **Real infra > mock (Testcontainers)** | `ChatTestContainers` (Mongo 7 + Redis singleton, no H2) | Mock/H2 hành xử khác Mongo thật (partial index, ObjectId). Bài học: integration test dùng **infra thật qua container**. | Testcontainers |
+| **Test cái guard thật, không test mock** | `repository/ChatIndexIT` chứng minh partial-unique qua `DuplicateKeyException` thật | Mock repo không kiểm được index có tồn tại không. Bài học: test **đúng cơ chế bảo vệ ở tầng nó sống**. | integration test |
+| **Real WebSocket client e2e** | `ChatWebSocketIT` — `WebSocketStompClient` trên `RANDOM_PORT` | Unit test interceptor chưa chứng minh handshake+authz e2e. Bài học: test giao thức bằng **client thật**. | e2e test |
+| **Async deterministic (không sleep)** | `BlockingQueue`/latch trong `ChatWebSocketIT` | `Thread.sleep` → flaky/chậm. Bài học: chờ theo **điều kiện** (latch/Awaitility), không theo thời gian. | flaky test, Awaitility |
+| **Test nơi hành vi thật sống** | best-effort push test ở `realtime/ChatRealtimePublisherTest` (mock template throw), KHÔNG mock publisher ở service | Mock sai chỗ → test xanh nhưng vô nghĩa. Bài học: đặt test **đúng ranh giới hành vi**. | test design |
+
+### H.8 Tư duy kỹ sư (engineering judgment)
+| Kỹ thuật (tên chuẩn) | Áp dụng ở đây | Vấn đề giải → bài học mang đi | 🔎 |
+|---|---|---|---|
+| **Right-sizing ([NOW] vs [BACKLOG · adopt-when])** | §G phân loại rõ từng hạng mục | Không over-engineer pilot, cũng không bỏ sót cái cắn ngay. Bài học: phân loại việc theo **"đau bây giờ" vs "để sau + ngưỡng"**. | YAGNI, right-sizing |
+| **Reuse pattern có sẵn** | `CloudinaryService` · `BookingRateLimiter` · `JwtUtil` · `common-test` | Viết mới = thêm bug + lệch convention. Bài học: **khảo sát code trước, tái dùng** pattern đã kiểm chứng. | DRY, consistency |
+| **Ground quyết định vào code thật** | §D/§G bắt nguồn từ đọc payment/gateway/security | Đừng thiết kế trên giả định. Bài học: **verify claim reuse bằng đọc code** trước khi chốt. | evidence-based design |
+| **Doc-driven + review trước code** | spec §A–§G + 8 luật P0/P1 map vào phase build | Fix bug trên giấy rẻ hơn trên code. Bài học: **senior-review spec trước khi code** feature có race/tiền/bảo mật. | ADR, design review |
+
+### H.9 Anti-pattern đã tránh (học cả cái SAI để không lặp)
+| # | Anti-pattern (làm sai) | Hệ quả | Cách đúng ở đây |
+|---|---|---|---|
+| 1 | read → check → save cho claim | 2 STAFF cùng nhận 1 thread (lost update) | atomic `findAndModify` filter trạng thái kỳ vọng (H.2) |
+| 2 | embed mảng message vào conversation | vỡ 16MB BSON · ghi lại cả doc mỗi tin | 2 collection, one-doc-per-message (H.5) |
+| 3 | offset/`skip` pagination | O(n), chậm dần khi lịch sử dài | keyset cursor `_id` (H.5) |
+| 4 | tin header `X-User-Id` từ gateway | spoof danh tính | re-validate JWT ở service (H.3) |
+| 5 | unique-sparse `activeCustomerId=null` | mọi doc CLOSED đụng nhau → không tạo được thread mới | partial-unique `customerId` filter status∈{OPEN,ASSIGNED} (H.5) |
+| 6 | push WS trước khi persist | broker lỗi → mất tin, hoặc lỗi push → 500 | persist-first + best-effort push (H.4) |
+| 7 | render nội dung bằng `innerHTML` | stored XSS | React text escape (H.3) |
+| 8 | `Thread.sleep` chờ async trong test | flaky, chậm | latch/BlockingQueue (H.7) |
+| 9 | query Mongo authz mỗi frame typing | hammer DB trên hot-path | cache participant TTL (H.3) |
+| 10 | `COUNT` unread mỗi lần render | chậm dần theo volume | denormalized counter + reconcile (H.2/H.4) |
+
+### H.10 Glossary từ khoá tự học (Google để đào sâu)
+- **Realtime**: WebSocket · STOMP · pub/sub · message broker · fan-out · sticky session · heartbeat · backpressure.
+- **Concurrency**: race condition · lost update · compare-and-swap (CAS) · optimistic vs pessimistic locking · idempotency · idempotency key.
+- **Security**: authentication vs authorization · defense in depth · zero trust · JWT (access/refresh token) · token expiry · stored XSS · IDOR · allowlist · principle of least privilege.
+- **Data / Mongo**: denormalization · keyset (cursor) pagination · partial index · unique constraint · ObjectId / monotonic id · unbounded array antipattern · schema design patterns (computed / extended-reference / subset) · sharding · replica set.
+- **Reliability**: source of truth · eventual consistency · at-least-once delivery · reconciliation · fail-open vs fail-closed · fail-fast · graceful degradation · circuit breaker.
+- **Testing**: Testcontainers · test pyramid · unit vs integration vs e2e · flaky test · deterministic async assertion (Awaitility).
+- **Frontend**: optimistic update · reference counting / singleton · reconnect with backoff · silent token refresh · derived state.
+- **Tư duy**: YAGNI · DRY · over-engineering · right-sizing · technical debt · ADR (Architecture Decision Record).
+
+### H.11 Câu hỏi phỏng vấn liên quan (neo vào chat này để tự luyện trả lời)
+| Câu hỏi phỏng vấn | Neo vào chat này để trả lời |
+|---|---|
+| Scale WebSocket qua nhiều instance thế nào? Vì sao **"no sticky"**? | external STOMP broker relay (RabbitMQ) + `setUserRegistryBroadcast` chia sẻ map user↔session → instance A đẩy được cho user nối instance B (H.1 · §D.11) |
+| Chống gửi trùng tin khi client retry? | idempotency key `clientMsgId` + **unique index ở DB** là chốt thật + DuplicateKey→trả bản ghi cũ (H.2) |
+| Auth WebSocket khác REST chỗ nào? | browser không gắn header lên handshake → auth ở **STOMP CONNECT frame**, gateway `/ws` public (H.3) |
+| 2 người cùng "nhận" 1 việc — chống race sao? | **atomic conditional update (CAS)** filter trạng thái kỳ vọng, KHÔNG read-check-write (H.2) |
+| Token 15' mà kết nối sống hàng giờ? | server schedule đóng session ở `exp` + client silent-refresh reconnect (H.3) |
+| Broker/Redis chết thì chat còn gửi được không? | persist-first + **best-effort push** → vẫn 201; rate-limit **fail-open** (H.4) |
+| Vì sao không đếm unread bằng `COUNT`? | denormalized counter O(1) + reconcile job sửa drift (H.2/H.4) |
+| Phân trang 10k tin sao cho nhanh? | **keyset cursor** theo `_id`, tránh skip/offset (H.5) |
+| Chống XSS trong khung chat? | lưu raw + **escape-on-render** (React text, không innerHTML) (H.3) |
+| Vì sao test dùng Testcontainers chứ không H2/mock? | H2/mock hành xử khác DB thật (partial index, ObjectId) → test cái guard thật (H.7) |
+
+> **Đọc sâu thêm** trong chính doc này: §D (patterns senior) · §F (MongoDB schema/index/scale) · §G (production
+> readiness — bảo mật WS, token, nhất quán, ops). §H chỉ là "bản rút gọn mang đi"; §D/§F/§G là bản đầy đủ.
