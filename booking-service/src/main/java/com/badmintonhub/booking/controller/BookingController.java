@@ -4,6 +4,7 @@ import com.badmintonhub.booking.dto.request.CancelBookingRequest;
 import com.badmintonhub.booking.dto.request.CreateBookingRequest;
 import com.badmintonhub.booking.dto.response.BookingResponse;
 import com.badmintonhub.booking.service.BookingService;
+import com.badmintonhub.common.exception.UnauthorizedException;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -41,14 +42,14 @@ public class BookingController {
     @PreAuthorize("hasAnyRole('USER','COACH','STAFF','ADMIN') and hasAuthority('EMAIL_VERIFIED')")
     public ResponseEntity<BookingResponse> create(@Valid @RequestBody CreateBookingRequest req,
                                                   Authentication auth) {
-        BookingResponse created = bookingService.create(req, UUID.fromString(auth.getName()));
+        BookingResponse created = bookingService.create(req, currentUserId(auth));
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     @GetMapping("/{id}")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<BookingResponse> getById(@PathVariable UUID id, Authentication auth) {
-        return ResponseEntity.ok(bookingService.getById(id, UUID.fromString(auth.getName()), roles(auth)));
+        return ResponseEntity.ok(bookingService.getById(id, currentUserId(auth), roles(auth)));
     }
 
     @GetMapping
@@ -56,7 +57,7 @@ public class BookingController {
     public ResponseEntity<Page<BookingResponse>> list(
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable,
             Authentication auth) {
-        return ResponseEntity.ok(bookingService.list(UUID.fromString(auth.getName()), roles(auth), pageable));
+        return ResponseEntity.ok(bookingService.list(currentUserId(auth), roles(auth), pageable));
     }
 
     @PostMapping("/{id}/cancel")
@@ -65,7 +66,7 @@ public class BookingController {
                                                   @RequestBody(required = false) @Valid CancelBookingRequest req,
                                                   Authentication auth) {
         String reason = (req != null) ? req.reason() : null;
-        return ResponseEntity.ok(bookingService.cancel(id, UUID.fromString(auth.getName()), roles(auth), reason));
+        return ResponseEntity.ok(bookingService.cancel(id, currentUserId(auth), roles(auth), reason));
     }
 
     /**
@@ -76,7 +77,21 @@ public class BookingController {
     @PostMapping("/{id}/begin-payment")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<BookingResponse> beginPayment(@PathVariable UUID id, Authentication auth) {
-        return ResponseEntity.ok(bookingService.beginPayment(id, UUID.fromString(auth.getName()), roles(auth)));
+        return ResponseEntity.ok(bookingService.beginPayment(id, currentUserId(auth), roles(auth)));
+    }
+
+    /**
+     * The authenticated principal's userId. {@code JwtAuthFilter} sets the principal name to the token's
+     * {@code sub} claim, which is a UUID for real tokens. A malformed-but-authenticated token (non-UUID
+     * subject) is a bad token — surface it as 401, never let {@code IllegalArgumentException} fall through
+     * to the catch-all handler as an opaque 500.
+     */
+    private static UUID currentUserId(Authentication auth) {
+        try {
+            return UUID.fromString(auth.getName());
+        } catch (IllegalArgumentException e) {
+            throw new UnauthorizedException("INVALID_PRINCIPAL", "Danh tính trong token không hợp lệ");
+        }
     }
 
     private static Collection<String> roles(Authentication auth) {
