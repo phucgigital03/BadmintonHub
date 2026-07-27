@@ -8,6 +8,10 @@ Eureka as `ai-service` so the existing gateway route `lb://ai-service` (`/api/ai
 > This service is **Python, not Maven** — it is intentionally absent from the root `pom.xml <modules>`.
 > Spec: `../UC_AI_Service_CustomerSupport.md`. Build plan: §16/§17.
 
+> 🐍 **Mới với Python?** Đọc [`PYTHON_HUONG_DAN_DOC_CODE.md`](PYTHON_HUONG_DAN_DOC_CODE.md) — giải thích
+> `__init__.py`, type hints, decorator, `async/await`, Pydantic/FastAPI/pytest… bằng chính code của service này,
+> kèm bảng đối chiếu Java/Spring → Python.
+
 ## Day 1 scope (this commit)
 Foundation + the 7 booking tools as a **FastMCP** server. No LLM/agent/graph yet (Day 2+).
 
