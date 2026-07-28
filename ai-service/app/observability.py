@@ -1,11 +1,17 @@
-"""OpenTelemetry tracing → Zipkin (best-effort).
+"""Tracing — OpenTelemetry→Zipkin (service hops) and LangSmith (LLM prompts/responses).
 
-Tracing must never block boot: any import/exporter problem is logged and swallowed so
-GET /health stays up even when Zipkin is unreachable.
+Two different questions, two different tools:
+  • Zipkin answers "which service was slow" — spans over HTTP calls, no prompt content.
+  • LangSmith answers "what did the model actually see and say" — one trace per turn, a tree of
+    graph nodes, each LLM call carrying its verbatim prompt + raw response + tokens.
+
+Neither may block boot: any import/exporter/config problem is logged and swallowed so
+GET /health stays up even when Zipkin or LangSmith is unreachable.
 """
 
 from __future__ import annotations
 
+import os
 import socket
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -31,6 +37,44 @@ def _zipkin_reachable(endpoint: str, timeout: float = 0.5) -> bool:
             return True
     except OSError:
         return False
+
+
+def configure_langsmith() -> None:
+    """Export the LangSmith settings into `os.environ` so tracing turns on for every LLM call.
+
+    Why this function has to exist: pydantic-settings parses the root .env into the `Settings`
+    OBJECT — it never populates `os.environ`. But `langsmith.utils.get_env_var` reads `os.environ`
+    (namespaces LANGSMITH_* then LANGCHAIN_*) and is `@lru_cache`d, so the values must be in the
+    process environment BEFORE the first traced run. Hence: called at import time in main.py.
+
+    Nothing else is needed — langchain-core auto-installs the tracer when it sees the flag, so
+    every `perceive` / `agent` LLM call and every LangGraph node is captured with no code changes
+    at the call sites. Already-exported shell vars win when the setting is off (we don't clear
+    them), so `LANGSMITH_TRACING=true uv run ...` keeps working as a one-off.
+    """
+    settings = get_settings()
+    if not settings.langsmith_tracing:
+        return
+    if not settings.langsmith_api_key or settings.langsmith_api_key == "FILL_IN":
+        # Half-enabling is worse than off: langchain would try to ship every run and fail on each
+        # one. Surface it on the alert channel (ERROR) and stay off.
+        log.error(
+            "langsmith.missing_api_key",
+            hint="set LANGSMITH_API_KEY in .env (get one at smith.langchain.com)",
+        )
+        return
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key
+    os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
+    os.environ["LANGSMITH_ENDPOINT"] = settings.langsmith_endpoint
+    # Loud on purpose: tracing ships conversation content (prompts + replies, unmasked) to an
+    # external service. That must never be a surprise in a log nobody reads.
+    log.warning(
+        "langsmith.enabled",
+        project=settings.langsmith_project,
+        endpoint=settings.langsmith_endpoint,
+        note="prompts + model replies are sent to LangSmith — dev only",
+    )
 
 
 def configure_observability(app: FastAPI) -> None:

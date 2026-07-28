@@ -19,10 +19,17 @@ from app.assistant import audit, sessions
 from app.assistant.rate_limit import RedisRateLimiter, build_redis_client
 from app.config import get_settings
 from app.logging import configure_logging, get_logger
-from app.observability import configure_observability
+from app.observability import configure_langsmith, configure_observability
 
 configure_logging()
+# At import time, not in the lifespan: langsmith caches its env lookups (@lru_cache), so the
+# flag has to be in os.environ before the first traced LLM call. No-op unless LANGSMITH_TRACING.
+configure_langsmith()
 log = get_logger(__name__)
+
+if get_settings().ai_dev_raw_pii:
+    # Never let this one be quiet: it disables every PII mask on logs AND on agent_run_log rows.
+    log.warning("pii.masking_disabled", flag="AI_DEV_RAW_PII", note="dev only — never in prod")
 
 
 @asynccontextmanager

@@ -112,10 +112,26 @@ for chat with no external API at all.
 Config: `.env` `LLM_PROVIDER` / `OLLAMA_MODEL` / `OLLAMA_BASE_URL` (chat) · `GEMINI_API_KEY` (RAG only).
 The active model (`qwen2.5:3b`) is snapshotted into every `agent_run_log` row for reproducibility.
 
+### 4b. Two dev switches that BREAK this posture — both must be `false` before go-live
+
+Debugging the concierge means reading what the model saw and said, which is exactly what the
+posture above is designed to prevent. So both escape hatches are opt-in, default off, and both
+announce themselves loudly at startup:
+
+| Flag | What it does | Why it breaks the posture |
+|---|---|---|
+| `LANGSMITH_TRACING=true` (+ `LANGSMITH_API_KEY`) | One trace per turn: every graph node, every LLM call with verbatim prompt + raw response + tokens. Wired by `observability.configure_langsmith()`; needs no code at the call sites. | Ships conversation content — **unmasked** — to LangSmith's cloud, undoing "PII never leaves the machine". |
+| `AI_DEV_RAW_PII=true` | Makes `mask_phone`/`scrub`/`redact_pii` passthrough. | Real names + phones land in log files **and** in `agent_run_log` rows. |
+
+**Gate:** `grep -E '^(LANGSMITH_TRACING|AI_DEV_RAW_PII)=true' .env` must return nothing.
+Startup emits `langsmith.enabled` / `pii.masking_disabled` (WARN) when either is on — if those
+lines appear in a production log, the posture is void.
+
 ## 5. PII / retention posture (already implemented — verify, don't rebuild)
 
 - **Masking:** `app/security/pii.py` `mask_phone`/`scrub` wired as a structlog processor
   (`app/logging.py`) → every log line + every `agent_run_log` row is PII-masked. (`test_pii`, `test_audit`)
+  Unless `AI_DEV_RAW_PII=true` — see §4b.
 - **Retention:** `SESSION_TTL_MINUTES` / `TRANSCRIPT_RETENTION_MINUTES` (default 24h). The periodic
   sweeper (`app/main._session_sweeper` + `sessions.sweep`) evicts expired sessions **and purges the
   checkpointer thread state** (transcript). Expired session → GET 404/410.

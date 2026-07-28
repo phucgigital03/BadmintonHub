@@ -26,13 +26,13 @@ from app.assistant.graph import (
     get_thread_state,
     has_pending_interrupt,
     resume_confirm,
+    run_config,
     snapshot_has_interrupt,
 )
 from app.assistant.limits import LimitExceeded, caps_from_settings
 from app.assistant.models import ConfirmDecision
 from app.assistant.nodes import classify_route
 from app.assistant.rate_limit import AllowAllRateLimiter
-from app.config import get_settings
 from app.security.deps import error_body, require_user
 from app.tools import schemas
 
@@ -166,10 +166,9 @@ async def send_message(
 
         return EventSourceResponse(stopped())
 
-    config = {
-        "configurable": {"thread_id": session_id},
-        "recursion_limit": get_settings().graph_recursion_limit,
-    }
+    # same config the REPL/confirm paths use — so a traced turn from the FE is labelled and
+    # capped identically to one driven from cli.py (one chokepoint, no drift)
+    config = run_config(session_id, user_id)
 
     async def _final_values() -> dict:
         return (await get_thread_state(graph, session_id)).values

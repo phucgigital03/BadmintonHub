@@ -85,6 +85,24 @@ class Settings(BaseSettings):
     otel_enabled: bool = True
     zipkin_url: str = "http://localhost:9411/api/v2/spans"
 
+    # --- LangSmith tracing (DEV) — see EVERY LLM request/response, node by node ---
+    # Zipkin traces the HTTP/service hops; it does NOT capture prompts or model replies.
+    # LangSmith does: one trace per user turn, a tree of graph nodes, and for each LLM call the
+    # verbatim prompt sent + raw response + tokens + latency. `langsmith` ships transitively with
+    # langchain-core, so this costs no new dependency — only env vars, exported by
+    # `observability.configure_langsmith()` (langsmith reads os.environ, not this Settings object).
+    # OFF by default: turning it on ships conversation content to LangSmith's cloud.
+    langsmith_tracing: bool = False
+    langsmith_api_key: str = ""
+    langsmith_project: str = "badmintonhub-ai"
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+
+    # --- DEV ONLY: disable PII masking (§11.6) in logs + agent_run_log ---
+    # Normally phones/names are masked before they reach a log line or the audit table, which is
+    # exactly what you don't want while debugging a contact-handling bug. True → mask_phone/scrub/
+    # redact_pii become passthrough. MUST stay false in prod (GO_LIVE_CHECKLIST §4).
+    ai_dev_raw_pii: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

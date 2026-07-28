@@ -12,7 +12,7 @@ from langgraph.errors import GraphRecursionError
 
 from app.assistant import graph as graph_mod
 from app.assistant import sessions
-from app.assistant.graph import _config, build_graph, run_turn
+from app.assistant.graph import build_graph, run_config, run_turn
 from app.assistant.limits import Caps, LimitExceeded, caps_from_settings, graceful_stop_turn
 from app.assistant.models import BookingIntent
 from app.assistant.nodes import AssistantNodes
@@ -102,7 +102,7 @@ async def test_react_tool_call_cap_stops_the_loop():
 
 
 def test_config_carries_recursion_limit():
-    cfg = _config("sid")
+    cfg = run_config("sid")
     assert cfg["recursion_limit"] == get_settings().graph_recursion_limit
 
 
@@ -129,7 +129,7 @@ async def test_run_turn_maps_recursion_to_graceful(monkeypatch):
     respx.get(f"{h.BASE}/api/clubs/{h.CLUB_ID}/slots").mock(
         return_value=httpx.Response(200, json=_grid_window())
     )
-    # force a tiny recursion limit via _config → the graph overruns → graceful stop
+    # force a tiny recursion limit via run_config → the graph overruns → graceful stop
     monkeypatch.setattr(graph_mod, "get_settings", lambda: types.SimpleNamespace(graph_recursion_limit=1))
     graph = build_graph(FakeModel(BookingIntent(sport="PICKLEBALL", date=date(2026, 8, 1))))
 

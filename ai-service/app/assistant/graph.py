@@ -107,12 +107,22 @@ def recent_messages(state: AgentState, n: int = RECENT_WINDOW) -> list:
     return state.get("messages", [])[-n:]
 
 
-def _config(session_id: str) -> dict:
-    # recursion_limit caps the self-looping money path (guardrail↔agent↔human_review) so a
-    # runaway can't burn tokens forever (§11.3). Over it → GraphRecursionError → graceful stop.
+def run_config(session_id: str, user_id: str = "") -> dict:
+    """The single config every graph invocation goes through (REPL, SSE endpoint, /confirm).
+
+    recursion_limit caps the self-looping money path (guardrail↔agent↔human_review) so a
+    runaway can't burn tokens forever (§11.3). Over it → GraphRecursionError → graceful stop.
+
+    run_name/tags/metadata are inert without tracing, but when LANGSMITH_TRACING is on they are
+    what makes a trace findable: the run shows up as "assistant-turn" and can be filtered by
+    session or user instead of hunting through an untitled list.
+    """
     return {
         "configurable": {"thread_id": session_id},
         "recursion_limit": get_settings().graph_recursion_limit,
+        "run_name": "assistant-turn",
+        "tags": ["assistant", f"session:{session_id}"],
+        "metadata": {"session_id": session_id, "user_id": user_id},
     }
 
 
@@ -157,7 +167,7 @@ async def run_turn(
                     return await answer_knowledge_while_paused(snapshot, knowledge, text)
                 resume = ConfirmDecision(confirmed=False, edits=text)
                 return await graph.ainvoke(
-                    Command(resume=resume.model_dump()), _config(session_id)
+                    Command(resume=resume.model_dump()), run_config(session_id, user_id)
                 )
             inputs: dict = {
                 "messages": [HumanMessage(content=text)],
@@ -165,7 +175,7 @@ async def run_turn(
                 "user_id": user_id,
                 "jwt": bearer,
             }
-            return await graph.ainvoke(inputs, _config(session_id))
+            return await graph.ainvoke(inputs, run_config(session_id, user_id))
         except GraphRecursionError:
             # cost/loop cap tripped — stop politely, never crash (§11.3)
             log.warning("run_turn.recursion_limit", session_id=session_id)
@@ -215,14 +225,16 @@ async def resume_confirm(
         input_text=label,
     ):
         try:
-            return await graph.ainvoke(Command(resume=decision.model_dump()), _config(session_id))
+            return await graph.ainvoke(
+                Command(resume=decision.model_dump()), run_config(session_id, user_id)
+            )
         except GraphRecursionError:
             log.warning("resume_confirm.recursion_limit", session_id=session_id)
             return {"turn": limits.graceful_stop_turn("recursion"), "stage": "error"}
 
 
 async def get_thread_state(graph, session_id: str) -> StateSnapshot:
-    return await graph.aget_state(_config(session_id))
+    return await graph.aget_state(run_config(session_id))
 
 
 def snapshot_has_interrupt(snapshot: StateSnapshot) -> bool:
