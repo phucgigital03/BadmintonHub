@@ -1,0 +1,364 @@
+# App layer — 8 Java services + the nginx-served frontend, as self-built images.
+# Overlays the infra-only docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml stop <app services>
+#
+# Deliberately declares NO `networks:` — docker-compose.yml doesn't either, so both
+# files land on the same default network and every service resolves the others by
+# service name. Declaring a network in only one file would split them (symptom:
+# "Eureka is UP but the gateway returns 503").
+#
+# Host ports 3000-3011 / 8761 must be free: stop any local `mvn spring-boot:run`
+# instances first.
+#
+# Measured on an 8 GB M1: bringing all 9 up at once takes ~12 minutes, because six JVMs
+# start concurrently alongside the infra containers (a single Spring web context spent
+# 128 s initialising). Hence start_period: 300s — with a shorter grace period Docker
+# flags the services `unhealthy` while they are still legitimately booting. Starting
+# them in two batches is noticeably faster if you are in a hurry.
+#
+# Every value below is the IN-CONTAINER address, which is NOT what root .env holds:
+#   Postgres  host 5433..5441  ->  container 5432
+#   Kafka     localhost:9092   ->  kafka:29092   (PLAINTEXT_INTERNAL listener)
+#   Mongo     localhost:27018  ->  mongodb-chat:27017
+# Only real secrets are interpolated from root .env; operational knobs are pinned here
+# on purpose (root .env still carries BOOKING_HOLD_MINUTES=1 from a QA session).
+
+services:
+
+  # ------------------------------------------------------------ service registry
+  eureka-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: eureka-server
+        PORT: "8761"
+    image: badmintonhub/eureka-server:dev
+    container_name: eureka-server
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8761/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: on-failure:3
+
+  # ------------------------------------------------------------------- gateway
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: api-gateway
+        PORT: "3000"
+    image: badmintonhub/api-gateway:dev
+    container_name: api-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      # CORS origin. With the SPA proxied by nginx this is same-origin, but the value
+      # must still match the browser origin for any direct :3000 call.
+      FRONTEND_URL: http://localhost:8081
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (root .env)}
+    depends_on:
+      redis:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    restart: on-failure:3
+
+  # -------------------------------------------------------------- user-service
+  user-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: user-service
+        PORT: "3001"
+    image: badmintonhub/user-service:dev
+    container_name: user-service
+    ports:
+      - "3001:3001"
+    environment:
+      DB_USER_URL: jdbc:postgresql://postgres-user:5432/user_db
+      POSTGRES_USERNAME: postgres
+      POSTGRES_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (root .env)}
+      JWT_ACCESS_EXPIRATION_MS: "900000"
+      JWT_REFRESH_EXPIRATION_MS: "2592000000"
+      # No default in application.yml -> the placeholder MUST resolve or the context
+      # fails. Empty is a valid value: EmailServiceImpl then logs the verify link
+      # instead of calling SendGrid.
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-noreply@badmintonhub.vn}
+      SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-BadmintonHub}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # Drives the verify-email / reset-password links in outgoing mail
+      FRONTEND_URL: http://localhost:8081
+    depends_on:
+      postgres-user:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    restart: on-failure:3
+
+  # ------------------------------------------------------------- court-service
+  court-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: court-service
+        PORT: "3002"
+    image: badmintonhub/court-service:dev
+    container_name: court-service
+    ports:
+      - "3002:3002"
+    environment:
+      DB_COURT_URL: jdbc:postgresql://postgres-court:5432/court_db
+      POSTGRES_USERNAME: postgres
+      POSTGRES_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (root .env)}
+    depends_on:
+      postgres-court:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3002/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    restart: on-failure:3
+
+  # ----------------------------------------------------------- booking-service
+  booking-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: booking-service
+        PORT: "3003"
+    image: badmintonhub/booking-service:dev
+    container_name: booking-service
+    ports:
+      - "3003:3003"
+    environment:
+      DB_BOOKING_URL: jdbc:postgresql://postgres-booking:5432/booking_db
+      POSTGRES_USERNAME: postgres
+      POSTGRES_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (root .env)}
+      # Pinned, NOT interpolated: root .env holds 1 (QA leftover). Invariant:
+      # BOOKING_HOLD_MINUTES == PAYMENT_EXPIRE_MINUTES.
+      BOOKING_HOLD_MINUTES: "10"
+      BOOKING_MAX_HOLD_MINUTES: "30"
+    depends_on:
+      postgres-booking:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3003/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    restart: on-failure:3
+
+  # ----------------------------------------------------------- payment-service
+  payment-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: payment-service
+        PORT: "3006"
+    image: badmintonhub/payment-service:dev
+    container_name: payment-service
+    ports:
+      - "3006:3006"
+    environment:
+      DB_PAYMENT_URL: jdbc:postgresql://postgres-payment:5432/payment_db
+      POSTGRES_USERNAME: postgres
+      POSTGRES_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (root .env)}
+      PAYMENT_EXPIRE_MINUTES: "10"
+      # Empty -> CloudinaryService degrades to local-fallback:// URLs (dev only;
+      # CloudinaryProdGuard fails the boot under the `prod` profile).
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+    depends_on:
+      postgres-payment:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3006/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    restart: on-failure:3
+
+  # ------------------------------------------------------------ escrow-service
+  # No Redis: escrow-service declares no spring.data.redis properties.
+  escrow-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: escrow-service
+        PORT: "3007"
+    image: badmintonhub/escrow-service:dev
+    container_name: escrow-service
+    ports:
+      - "3007:3007"
+    environment:
+      DB_ESCROW_URL: jdbc:postgresql://postgres-escrow:5432/escrow_db
+      POSTGRES_USERNAME: postgres
+      POSTGRES_PASSWORD: postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (root .env)}
+    depends_on:
+      postgres-escrow:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3007/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    restart: on-failure:3
+
+  # -------------------------------------------------------------- chat-service
+  # MongoDB only (JPA/DataSource auto-config excluded), no Kafka. RabbitMQ is reached
+  # through the custom app.broker.* namespace, not spring.rabbitmq.
+  chat-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: chat-service
+        PORT: "3011"
+    image: badmintonhub/chat-service:dev
+    container_name: chat-service
+    ports:
+      - "3011:3011"
+    environment:
+      MONGODB_CHAT_URI: mongodb://mongodb-chat:27017/chat_db
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (root .env)}
+      CHAT_BROKER_RELAY: "true"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_STOMP_PORT: "61613"
+      RABBITMQ_USER: ${RABBITMQ_USER:-badminton}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:-badminton}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+      # WebSocketConfig.setAllowedOrigins(frontendUrl) validates the handshake Origin
+      # header, which nginx forwards untouched -> must equal the nginx origin.
+      FRONTEND_URL: http://localhost:8081
+    depends_on:
+      mongodb-chat:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3011/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    restart: on-failure:3
+
+  # ----------------------------------------------------------------- frontend
+  # Built with no VITE_* args: the bundle derives its origin from window.location and
+  # nginx proxies /api + /ws to the gateway. One image for every environment.
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: badmintonhub/frontend:dev
+    container_name: frontend
+    ports:
+      - "8081:80"   # 8080 is taken by kafka-ui
+    depends_on:
+      api-gateway:
+        condition: service_started
+    healthcheck:
+      # 127.0.0.1, not localhost: musl resolves localhost to ::1 first, and nginx only
+      # listens on IPv4 here (the image's 10-listen-on-ipv6-by-default.sh skips our
+      # custom default.conf), so `localhost` gets connection-refused.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: on-failure:3

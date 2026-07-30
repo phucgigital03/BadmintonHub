@@ -1,0 +1,39 @@
+# Build context is the whole repo (the Maven aggregator needs every module dir), so
+# trimming it matters: the raw tree is ~1.4 GB, of which */target alone is ~1.0 GB.
+# Everything below is either rebuilt inside the image or must never enter the build.
+
+.git
+.gitignore
+
+# Maven output — rebuilt in the build stage. Stale jars here could otherwise shadow a
+# fresh build.
+**/target
+
+# Frontend has its own build context (frontend/.dockerignore); excluded here so the
+# Java build context stays small.
+frontend/node_modules
+frontend/dist
+frontend/build
+
+# Python service — not part of any Java image (see Planning_CICD.md Phụ lục A)
+ai-service/.venv
+**/__pycache__
+**/*.pyc
+
+# SECRETS + config drift. Every module inherits spring-dotenv, so a leaked .env inside
+# the image would silently fill in any variable we forget to declare in compose/Helm
+# (root .env currently holds BOOKING_HOLD_MINUTES=1, a leftover QA value) — and it
+# carries real Cloudinary / Gemini / LangSmith keys.
+.env
+.env.*
+
+# Not needed to build
+docker-compose*.yml
+Dockerfile
+*.md
+.claude
+.idea
+.vscode
+scripts
+**/*.log
+.DS_Store
