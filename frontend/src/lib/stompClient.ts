@@ -11,9 +11,16 @@ import { refreshAccessToken } from '../api/axiosClient';
  *   registry and fires connect listeners (components use that to history-sync).
  * - ref-counted activation: the socket is up only while at least one chat surface is open.
  */
+// Precedence: explicit VITE_CHAT_WS_URL -> derived from VITE_API_URL (`npm run dev`)
+// -> same-origin (nginx proxies /ws to the gateway). The same-origin branch is what
+// makes one frontend image work behind any host, and it upgrades itself to `wss`
+// automatically once TLS is terminated at the load balancer.
+const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
 const WS_URL =
   (import.meta.env.VITE_CHAT_WS_URL as string | undefined) ??
-  (import.meta.env.VITE_API_URL as string).replace(/^http/, 'ws') + '/ws';
+  (apiUrl
+    ? apiUrl.replace(/^http/, 'ws') + '/ws'
+    : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`);
 
 type Handler = (msg: IMessage) => void;
 interface Registered {

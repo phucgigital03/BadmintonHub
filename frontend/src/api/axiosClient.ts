@@ -1,7 +1,10 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '../store/authStore';
 
-const BASE_URL = import.meta.env.VITE_API_URL as string;
+// Empty string = same-origin: the page is served by nginx, which reverse-proxies /api
+// (and /ws) to the gateway. Keeping the VITE_API_URL branch means `npm run dev`
+// (Vite :5173 -> gateway :3000) still works unchanged.
+const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
 
 /**
  * Single axios instance for all backend calls (through the API gateway :3000).

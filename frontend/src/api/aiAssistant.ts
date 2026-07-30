@@ -13,7 +13,9 @@ import type { PaymentResponse } from './payments';
  * stays on the existing hardened path (PaymentScreen).
  */
 
-const BASE_URL = import.meta.env.VITE_API_URL as string;
+// Same-origin by default (nginx proxies /api to the gateway); VITE_API_URL is only for
+// `npm run dev`. See axiosClient.ts.
+const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
 
 // ── Agent DTO shapes ─────────────────────────────────────────────────────────
 // AgentTurn is camelCase; the card contents (CourtOption / ProposedBooking) are snake_case.
