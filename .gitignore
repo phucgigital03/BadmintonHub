@@ -67,6 +67,18 @@ frontend/.env.*
 # ── Docker ────────────────────────────────────────────────────────────────────
 docker-compose.override.yml
 
+# ── Terraform ─────────────────────────────────────────────────────────────────
+# tfstate lưu GIÁ TRỊ THÔ của mọi resource (kể cả field sensitive) — repo này sẽ PUBLIC.
+# LƯU Ý: .terraform.lock.hcl PHẢI được commit (ghim version provider = tái lập được).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+# crash.log đã được `*.log` ở mục Logs chặn sẵn
+
 # ── Misc ──────────────────────────────────────────────────────────────────────
 *.swp
 *.swo
