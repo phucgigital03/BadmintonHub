@@ -4,7 +4,7 @@ Runbook **bấm tay trên FE** để kiểm tra trọn vẹn luồng booking↔p
 5 nhánh ngoại lệ. Mỗi bước ghi rõ **bấm gì → mong đợi gì → kiểm chứng ở đâu** (trạng thái FE + màu lưới ô +
 Kafka UI/DB khi cần).
 
-> Spec luồng đầy đủ: `UC_Visual_Day_Booking.md`. Cổng/port: `architecture.md`. Đây là tài liệu **QA tay**,
+> Spec luồng đầy đủ: `../usecase/UC_Visual_Day_Booking.md`. Cổng/port: `architecture.md`. Đây là tài liệu **QA tay**,
 > không phải test tự động.
 
 **Quy ước màu lưới ô** (nguồn sự thật cho hold/release):

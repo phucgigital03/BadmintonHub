@@ -1,6 +1,6 @@
 # ai-service — Go-Live Checklist (Day 7/7, Phase 7b)
 
-AI booking concierge (`UC_AI_Service_CustomerSupport.md`). This is the final safety gate: it maps
+AI booking concierge (`../usecase/UC_AI_Service_CustomerSupport.md`). This is the final safety gate: it maps
 every §15 acceptance item to runnable evidence, records the eval + red-team scorecards, states the
 provider/PII posture, and defines the runtime e2e to walk before opening to anyone.
 

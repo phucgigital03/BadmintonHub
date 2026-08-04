@@ -292,7 +292,7 @@ git check-ignore -q terraform/.terraform.lock.hcl || echo "lock file commit đư
 
 1. Mở Claude Code tại **`/Users/phucnguyen/ClaudeCodeProjects/badmintonHub`** (app repo — `terraform/` sống ở đây, **không** phải repo gitops).
 2. Bật **plan mode** (`Shift+Tab`).
-3. Paste nguyên khối prompt ở [`../Planning_CICD.md`](../Planning_CICD.md) §Day 3 (khối ```` ```text ```` ngay dưới dòng *"📋 Prompt paste-ready — Day 3"*).
+3. Paste nguyên khối prompt ở [`../planning/Planning_CICD.md`](../planning/Planning_CICD.md) §Day 3 (khối ```` ```text ```` ngay dưới dòng *"📋 Prompt paste-ready — Day 3"*).
 4. **Dán thêm khối này vào cuối prompt** — prompt gốc thiếu, và hậu quả rơi vào Phase 7:
 
 ```text
@@ -607,7 +607,7 @@ cd terraform && terraform destroy      # từ Day 4 dùng bản đầy đủ §9
 ## Đọc tiếp
 
 - [`DAY3-EXPLAINED.md`](DAY3-EXPLAINED.md) — **vì sao** mỗi thứ tồn tại (Terraform · VPC · IRSA · add-on · bẫy · chi phí)
-- [`../Planning_CICD.md`](../Planning_CICD.md) §Day 3 — prompt paste-ready · §7 runbook teardown · §8 chi phí
+- [`../planning/Planning_CICD.md`](../planning/Planning_CICD.md) §Day 3 — prompt paste-ready · §7 runbook teardown · §8 chi phí
 - **Day 4** = deploy staging + Ingress ALB → làm ở repo `badmintonHub-gitops`
 
 > ⏭ **Nhắc cho Day 8**: bạn đã chọn **bỏ qua domain** ở Day 3. Đổi nameserver mất **1–48 giờ** và ACM cert đứng `PENDING_VALIDATION` cho tới khi DNS validate resolve được — cả chuỗi đó **không cần cụm**. Mua domain sát ngày demo là canh bạc. Muốn an toàn thì mua bất cứ lúc nào từ giờ tới Day 7 (Route53 → *Registered domains* → *Register domain*, ~$13–15/năm `.com`, NS tự cấu hình), rồi để đó.

@@ -694,7 +694,7 @@ Khi debug: **in KEY, đừng in VALUE.** Đừng `base64 -d` secret rồi để 
 
 | Muốn hiểu | Đọc |
 |---|---|
-| Kế hoạch đầy đủ 8 ngày · §Day 3 · §8 chi phí · §9 rủi ro né NAT | [`Planning_CICD.md`](../Planning_CICD.md) |
+| Kế hoạch đầy đủ 8 ngày · §Day 3 · §8 chi phí · §9 rủi ro né NAT | [`Planning_CICD.md`](../planning/Planning_CICD.md) |
 | Day 1 — Docker và image | [`DAY1-EXPLAINED.md`](DAY1-EXPLAINED.md) |
 | Day 2 — Helm và Kubernetes | `docs/DAY2-EXPLAINED.md` ở repo `badmintonHub-gitops` |
 | Sơ đồ vật lý AWS · cái gì sống sót destroy | `docs/ARCHITECTURE.md` §1 ở repo gitops |

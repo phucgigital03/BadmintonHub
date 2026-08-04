@@ -829,7 +829,7 @@ Dữ liệu không nằm trong container — nó nằm trong *volume*. Đó chí
 
 | Muốn hiểu | Đọc |
 |---|---|
-| Kế hoạch đầy đủ 8 ngày | [`Planning_CICD.md`](../Planning_CICD.md) |
+| Kế hoạch đầy đủ 8 ngày | [`Planning_CICD.md`](../planning/Planning_CICD.md) |
 | Day 2 — Helm và Kubernetes | `docs/DAY2-EXPLAINED.md` ở repo `badmintonHub-gitops` |
 | Bản đồ service, cổng, luật kiến trúc | [`.claude/rules/architecture.md`](../.claude/rules/architecture.md) |
 | Trạng thái hiện tại của cả dự án | [`CLAUDE.md`](../CLAUDE.md) |

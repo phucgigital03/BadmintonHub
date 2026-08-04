@@ -6,7 +6,7 @@ alwaysApply: true
 # BadmintonHub — Architecture
 
 Microservices platform for badminton court booking, matchmaking, coach enrollment, and events in Vietnam.
-Full design reference: `CLAUDE_Example.md` · ERDs: `ERD_All_Services.md` · Use Cases: `UC_*.md`
+Full design reference: `CLAUDE_Example.md` · ERDs: `ERD_All_Services.md` · Use Cases: `usecase/UC_*.md` · QA runbooks: `testing_docs/Testing_*.md` · Plans: `planning/Planning_*.md`
 
 ## Module Map & Ports
 

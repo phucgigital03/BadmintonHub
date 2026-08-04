@@ -5,7 +5,7 @@ Runbook **bấm tay trên FE** để đi trọn **8 use case** của trợ lý A
 "confirm giúp tôi" / prompt-injection) + session resume. Mỗi bước ghi rõ **gõ/bấm gì → mong đợi gì trên UI →
 kiểm chứng ở đâu**.
 
-> Spec luồng đầy đủ: `UC_AI_Service_CustomerSupport.md` · Runbook + go-live gate: `ai-service/GO_LIVE_CHECKLIST.md`
+> Spec luồng đầy đủ: `../usecase/UC_AI_Service_CustomerSupport.md` · Runbook + go-live gate: `ai-service/GO_LIVE_CHECKLIST.md`
 > (§6 e2e · §7 gate). Cổng/port: `architecture.md` + `eureka-config.md`. Đây là tài liệu **QA tay**, KHÔNG phải
 > test tự động (test tự động = **161 pytest + 3 live-skip**, chạy `cd ai-service && uv run pytest`).
 

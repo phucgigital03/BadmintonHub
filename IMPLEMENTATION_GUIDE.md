@@ -132,7 +132,7 @@ Sau khi setup: hỏi "Check booking table có PENDING record nào > 10 phút kh�
 > (Python FastAPI/LangGraph) — đã được kéo lên làm **trước Day 10 + Week 3**. Xem **Day 10.5** (cuối Week 2).
 > Thay cho "ai stub" cũ ở Day 20.
 > 💬 **Chat hỗ trợ real-time** STAFF↔Khách (STOMP · `chat-service` Java port 3011) = **Day 10.6** (ngay sau Day 10.5,
-> cuối Week 2) — spec `UC_Chatting.md`, build theo 5 phase paste-ready.
+> cuối Week 2) — spec `usecase/UC_Chatting.md`, build theo 5 phase paste-ready.
 
 ---
 
@@ -656,13 +656,13 @@ curl -X POST http://localhost:3000/api/auth/login -d '{"email":"test@test.com","
 ### Day 6: court-service — Clubs + Courts (Sân) + Pricing + Slots
 
 **Mục tiêu**: CRUD clubs (venue) + courts (Sân) + bảng giá đa chiều, slot **30'** auto-gen, geo search ở mức **CLB**.
-> 📄 Spec chi tiết: `UC_Visual_Day_Booking.md` (grid hàng=Sân × cột=ô 30', giá tra `court_pricing_rules`).
+> 📄 Spec chi tiết: `usecase/UC_Visual_Day_Booking.md` (grid hàng=Sân × cột=ô 30', giá tra `court_pricing_rules`).
 
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/java-spring.md, .claude/rules/database.md,
 .claude/rules/redis-patterns.md, .claude/rules/resilience.md, .claude/rules/rbac-security.md.
-Spec: UC_Visual_Day_Booking.md + ERD_All_Services.md (court_db block).
+Spec: usecase/UC_Visual_Day_Booking.md + ERD_All_Services.md (court_db block).
 
 Implement đầy đủ court-service (court_db) theo ERD mới (1 CLB ──< N Sân ──< N ô 30'):
 
@@ -705,13 +705,13 @@ Test: tạo Club → Court → pricing rule → generate-slots → GET /api/club
 ### Day 7: booking-service — Reservation (header + items) + distributed lock
 
 **Mục tiêu**: 1 đơn (header) = **N ô 30'** (items, nhiều Sân) với Redis lock từng ô, không race condition.
-> 📄 Spec chi tiết: `UC_Visual_Day_Booking.md` (header `bookings` + `booking_items`, khoá TẤT CẢ ô, huỷ nguyên đơn).
+> 📄 Spec chi tiết: `usecase/UC_Visual_Day_Booking.md` (header `bookings` + `booking_items`, khoá TẤT CẢ ô, huỷ nguyên đơn).
 
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/java-spring.md, .claude/rules/redis-patterns.md,
 .claude/rules/resilience.md, .claude/rules/kafka-patterns.md, .claude/rules/database.md,
-.claude/rules/rbac-security.md. Spec: UC_Visual_Day_Booking.md.
+.claude/rules/rbac-security.md. Spec: usecase/UC_Visual_Day_Booking.md.
 
 Implement booking-service (booking_db) theo model HEADER + ITEMS:
 
@@ -921,7 +921,7 @@ Fix mọi bug phát hiện được.
 
 > ▶️ **ƯU TIÊN**: User muốn build feature này **TRƯỚC** Day 10 và Week 3. Đây là **ai-service THẬT**
 > (thay cho "ai stub" ở Day 20 — Day 20 PHẦN B nay chỉ trỏ về đây).
-> 📄 **Spec đầy đủ = `UC_AI_Service_CheckImageForStaff.md`** (paste nguyên văn vào Claude Code, **chạy plan mode trước**).
+> 📄 **Spec đầy đủ = `usecase/UC_AI_Service_CheckImageForStaff.md`** (paste nguyên văn vào Claude Code, **chạy plan mode trước**).
 > Mục này chỉ chốt quyết định + phạm vi sửa, KHÔNG lặp lại 128 dòng UC.
 
 **Mục tiêu**: Khi STAFF bấm "Xem" 1 payment ở tab Duyệt thanh toán → `ai-service` chạy 1 LangGraph agent đọc ảnh
@@ -952,7 +952,7 @@ Xác nhận / Từ chối.**
 
 **Prompt Claude Code**:
 ```
-Đọc trước: UC_AI_Service_CheckImageForStaff.md (SPEC ĐẦY ĐỦ — tuân thủ kỷ luật phạm vi: đúng 1 agent),
+Đọc trước: usecase/UC_AI_Service_CheckImageForStaff.md (SPEC ĐẦY ĐỦ — tuân thủ kỷ luật phạm vi: đúng 1 agent),
 .claude/rules/payment.md, .claude/rules/eureka-config.md, .claude/rules/rbac-security.md, .claude/rules/redis-patterns.md.
 Quyết định đã chốt (KHÔNG hỏi lại): LLM provider-agnostic, mặc định Google Gemini 2.5 Flash (đổi qua .env) · Python FastAPI/LangGraph + py-eureka-client (giữ lb://ai-service)
 · nguồn bank = import sao kê VCB thủ công vào bảng bank_transactions (pluggable, extension point SePay).
@@ -1009,7 +1009,7 @@ VCB dedupe đúng theo `bank_ref` · secrets không trong source · test + eval 
 
 ### Day 10.6 — chat-service: Chat hỗ trợ real-time STAFF ↔ Khách (STOMP · Java · port 3011)
 
-> 📄 **Spec đầy đủ = `UC_Chatting.md`** (paste **nguyên văn** vào Claude Code, **chạy plan mode TRƯỚC mỗi phase**).
+> 📄 **Spec đầy đủ = `usecase/UC_Chatting.md`** (paste **nguyên văn** vào Claude Code, **chạy plan mode TRƯỚC mỗi phase**).
 > Mục này chỉ chốt **phase + prompt paste-ready**, KHÔNG lặp lại UC. chat-service là **service Java Spring MỚI**
 > (khác ai-service Python ở Day 10.5) → theo convention `/new-service` + vào `<modules>` root pom.
 > Làm **sau** Day 10.5; có thể làm ở **session riêng**. Backend-first, mỗi phase commit khi xanh.
@@ -1044,7 +1044,7 @@ vào **hàng đợi chưa-gán chung**; STAFF **claim** về **inbox riêng** �
 > ✅ **Độc lập**: chat-service KHÔNG phụ thuộc notification-service (đã GỠ thông báo offline) — build chạy được
 > mà không cần Day 13. Người nhận offline → tin vẫn lưu DB, nhận lại khi reconnect (history-sync §G.6).
 
-**⚠️ 8 luật senior-review BẮT BUỘC honor (chốt 2026-07-03 — đã vá vào `UC_Chatting.md`; KHÔNG code khác).**
+**⚠️ 8 luật senior-review BẮT BUỘC honor (chốt 2026-07-03 — đã vá vào `usecase/UC_Chatting.md`; KHÔNG code khác).**
 Đây là các chỗ Mongo/STOMP mà code "theo trực giác" sẽ ra **bug/500/hammer DB** — mỗi phase dưới trỏ về đúng luật:
 
 | # | Luật | Phase | Cơ chế BẮT BUỘC (đọc §chỉ định trong UC) |
@@ -1064,13 +1064,13 @@ vào **hàng đợi chưa-gán chung**; STAFF **claim** về **inbox riêng** �
 
 **PHASE 0 — Nạp ngữ cảnh (làm 1 lần đầu session)**
 ```
-Đọc trước (đọc kỹ, KHÔNG bỏ qua): UC_Chatting.md (SPEC ĐẦY ĐỦ — 4 UC + Phụ lục A→G),
+Đọc trước (đọc kỹ, KHÔNG bỏ qua): usecase/UC_Chatting.md (SPEC ĐẦY ĐỦ — 4 UC + Phụ lục A→G),
 .claude/rules/architecture.md, .claude/rules/eureka-config.md, .claude/rules/rbac-security.md,
 .claude/rules/redis-patterns.md, .claude/rules/database.md,
 .claude/rules/java-spring.md, .claude/rules/testing.md, .claude/rules/frontend.md.
 
 Tôi sẽ build chat-service theo 5 phase (PHASE 1→5 ở dưới), backend-first. TRƯỚC MỖI PHASE: chạy plan mode,
-khảo sát code thật, rồi mới code. Quyết định kiến trúc đã CHỐT trong UC_Chatting.md §0.2 + §G — KHÔNG hỏi lại,
+khảo sát code thật, rồi mới code. Quyết định kiến trúc đã CHỐT trong usecase/UC_Chatting.md §0.2 + §G — KHÔNG hỏi lại,
 KHÔNG đổi sang socket.io, KHÔNG bỏ qua phần bảo mật §G. Mỗi phase xong: mvn verify xanh rồi commit (KHÔNG
 Co-Authored-By trailer), rồi sang phase sau.
 ```
@@ -1106,7 +1106,7 @@ Verify: mvn -pl chat-service spring-boot:run → đăng ký Eureka UP, GET /actu
 
 **PHASE 2 — Domain MongoDB + REST (CHƯA realtime)** — *UC-CHAT-01/03 + UC-02 persist · §F · §G.3/G.5/G.7*
 ```
-Đọc lại UC_Chatting.md §E.1 (REST), §E.4 (schema), §F (index/keyset/patterns + §F.7 initializer), §G.3/G.5/G.7. Plan mode trước.
+Đọc lại usecase/UC_Chatting.md §E.1 (REST), §E.4 (schema), §F (index/keyset/patterns + §F.7 initializer), §G.3/G.5/G.7. Plan mode trước.
 - @Document đúng §E.4:
   · conversations: `_id` UUID · status OPEN/ASSIGNED/CLOSED · assignedStaffId? · snapshot customerName ·
     counters customerUnread/staffUnread · lastMessagePreview/lastMessageAt · archivedAt?.
@@ -1145,7 +1145,7 @@ partial-unique 1-thread-mở/khách, validation 400, authz 403). mvn verify xanh
 
 **PHASE 3 — STOMP real-time + bảo mật WS** — *UC-CHAT-02 realtime · §C/§D · §G.1/G.2/G.6*
 ```
-Đọc lại UC_Chatting.md §C, §D.1/2/3/8, §E.2 (STOMP destinations), §G.1/G.2/G.6. Plan mode trước.
+Đọc lại usecase/UC_Chatting.md §C, §D.1/2/3/8, §E.2 (STOMP destinations), §G.1/G.2/G.6. Plan mode trước.
 - WebSocketConfig (@EnableWebSocketMessageBroker): registerStompEndpoints("/ws").setAllowedOrigins(${FRONTEND_URL})
   ; **enableStompBrokerRelay("/topic","/queue")** trỏ RabbitMQ (setRelayHost ${RABBITMQ_HOST} · setRelayPort 61613 ·
   setSystemLogin/setSystemPasscode + setClientLogin/setClientPasscode · setUserRegistryBroadcast("/topic/simp-user-registry")
@@ -1174,7 +1174,7 @@ SEND delivered cho thread không thuộc về mình → từ chối; send → ng
 
 **PHASE 4 — Frontend (`@stomp/stompjs`)** — *UC-CHAT-01..04 FE · §G.2/G.3*
 ```
-Đọc lại UC_Chatting.md §E.1/§E.2 + .claude/rules/frontend.md. Plan mode trước. Cài @stomp/stompjs (GIỮ socket.io cho match).
+Đọc lại usecase/UC_Chatting.md §E.1/§E.2 + .claude/rules/frontend.md. Plan mode trước. Cài @stomp/stompjs (GIỮ socket.io cho match).
 - stompClient.ts: kết nối wss qua gateway /ws với connectHeaders Authorization=Bearer; bắt CLOSE/ERROR →
   silent-refresh (POST /api/auth/refresh, tái dùng axiosClient) → reconnect kèm token mới (§G.2); reconnect chạy
   history-sync (GET messages keyset). REST tin/ảnh/claim... qua axiosClient.
@@ -1190,7 +1190,7 @@ Verify: npm run build xanh; click-test khách↔STAFF gửi/nhận tức thì, 3
 
 **PHASE 5 — Test tổng + go-live checklist (§G.10)**
 ```
-Đọc lại UC_Chatting.md §G.10. Bổ sung test còn thiếu + chạy checklist:
+Đọc lại usecase/UC_Chatting.md §G.10. Bổ sung test còn thiếu + chạy checklist:
 - Unit: dedupe clientMsgId · validation ≤2000/blank · claim race 409 · authz (USER không thấy thread STAFF khác;
   participant-check). IT (Testcontainers Mongo+Redis): send→persist→push · keyset pagination ·
   WS CONNECT thiếu/sai token reject · SUBSCRIBE /topic/staff.queue bởi USER → 403 ·
@@ -1231,7 +1231,7 @@ User đăng ký → verify email → tìm CLB → xem grid Sân × ô 30' → ch
 ```
 Đọc trước: .claude/rules/kafka-patterns.md (Outbox + Zombie — rule #4, #6),
 .claude/rules/redis-patterns.md, .claude/rules/resilience.md, .claude/rules/database.md,
-.claude/rules/rbac-security.md. Spec: UC_Matchmaking.md (UC-MATCH-01).
+.claude/rules/rbac-security.md. Spec: usecase/UC_Matchmaking.md (UC-MATCH-01).
 
 Implement matchmaking-service phần tạo match (matchmaking_db) theo ERD mới (match giữ N ô 30'):
 
@@ -1296,7 +1296,7 @@ Outbox + zombie là logic dễ sai NHẤT dự án → **biến thể TDD** (tes
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/kafka-patterns.md, .claude/rules/redis-patterns.md (Atomic Slot Counter),
-.claude/rules/rbac-security.md. Spec: UC_Matchmaking.md (UC-MATCH-03 Join Saga).
+.claude/rules/rbac-security.md. Spec: usecase/UC_Matchmaking.md (UC-MATCH-03 Join Saga).
 
 Bổ sung matchmaking-service phần join (Saga). LƯU Ý: counter "match:{matchId}:slots" đếm
 số NGƯỜI chơi (≤ totalSlots), KHÁC với MatchSlot (các ô 30' đã giữ từ Day 11):
@@ -1519,7 +1519,7 @@ Coach: enroll → Bank QR → confirm → enrollment CONFIRMED
 **Prompt Claude Code**:
 ```
 Đọc trước: .claude/rules/database.md (event_tickets state machine), .claude/rules/payment.md,
-.claude/rules/kafka-patterns.md, .claude/rules/frontend.md. Spec: UC_Event_Booking.md.
+.claude/rules/kafka-patterns.md, .claude/rules/frontend.md. Spec: usecase/UC_Event_Booking.md.
 
 PHẦN A — event-service (event_db) theo ERD mới (event ở CLB):
 - Entity: Event (clubId UUID cross-service, eventNumber SERIAL, title, format enum SOCIAL/COMPETITIVE,

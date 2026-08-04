@@ -104,7 +104,7 @@ public void publishPendingOutboxEvents() {
 ```
 
 ### Slot Auto-Generation (court-service)
-30-min cells, window 05:00–22:00 (per ERD + `UC_Visual_Day_Booking.md`). Idempotent per (court, date).
+30-min cells, window 05:00–22:00 (per ERD + `usecase/UC_Visual_Day_Booking.md`). Idempotent per (court, date).
 ```java
 @Scheduled(cron = "0 0 0 * * *")  // midnight daily
 public void generateUpcomingSlots() {

@@ -7,7 +7,7 @@
 > **Mọi ví dụ trong tài liệu này là code THẬT của repo**, kèm đường dẫn dạng `app/config.py:89`
 > (số sau dấu `:` là số dòng — mở file, nhảy tới đúng dòng đó mà đối chiếu).
 >
-> Tài liệu anh em: `README.md` (cách chạy) · `../UC_AI_Service_CustomerSupport.md` §18 (vì sao thiết kế
+> Tài liệu anh em: `README.md` (cách chạy) · `../usecase/UC_AI_Service_CustomerSupport.md` §18 (vì sao thiết kế
 > kiến trúc AI như vậy). Tài liệu này lấp phần còn thiếu: **ngôn ngữ Python + thư viện**.
 
 ---
@@ -1231,7 +1231,7 @@ Dịch: giả vờ `GET /api/clubs` trả JSON mẫu → gọi tool thật → k
 - **interrupt** = **dừng graph giữa chừng chờ người bấm xác nhận** — đây là chốt an toàn tiền của cả feature.
 - **checkpointer** = lưu state để lượt chat sau còn nhớ (`MemorySaver` = RAM, `AsyncPostgresSaver` = DB).
 
-Vì sao thiết kế vậy → đọc `../UC_AI_Service_CustomerSupport.md` §18.
+Vì sao thiết kế vậy → đọc `../usecase/UC_AI_Service_CustomerSupport.md` §18.
 
 ---
 
@@ -1429,7 +1429,7 @@ Có chủ đích: Postgres chết → thay vì sập, service **hạ cấp** san
    và "quên `await` thì hàm không chạy" là đủ đọc code.
 4. **Rồi mới mở `app/assistant/nodes.py`** (688 dòng). Đọc từng method của class `AssistantNodes` một, mỗi
    method là một bước xử lý độc lập — đừng đọc từ trên xuống một mạch.
-5. Khi đã đọc trôi code, quay sang `../UC_AI_Service_CustomerSupport.md` §18 để hiểu **vì sao** kiến trúc
+5. Khi đã đọc trôi code, quay sang `../usecase/UC_AI_Service_CustomerSupport.md` §18 để hiểu **vì sao** kiến trúc
    được thiết kế như vậy (phần đó dạy tư duy hệ thống AI, không dạy Python).
 
 ---
@@ -1452,4 +1452,4 @@ Có chủ đích: Postgres chết → thay vì sập, service **hạ cấp** san
 ---
 
 _Tài liệu này chỉ dạy đọc code — không mô tả quy trình build/deploy. Cách chạy service: `README.md`.
-Vì sao thiết kế kiến trúc như vậy: `../UC_AI_Service_CustomerSupport.md` §18._
+Vì sao thiết kế kiến trúc như vậy: `../usecase/UC_AI_Service_CustomerSupport.md` §18._

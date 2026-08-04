@@ -5,7 +5,7 @@ Runbook **bấm tay trên FE** để kiểm tra trọn vẹn feature chat real-t
 reconnect + history-sync) + các cổng bảo mật **§G**. Mỗi bước ghi rõ **bấm gì → mong đợi gì → kiểm chứng ở đâu**
 (trạng thái FE + STOMP frame trên DevTools + RabbitMQ/Mongo khi cần).
 
-> Spec luồng đầy đủ: `UC_Chatting.md` (đặc biệt **§G** production + **§G.10** go-live). Cổng/port:
+> Spec luồng đầy đủ: `../usecase/UC_Chatting.md` (đặc biệt **§G** production + **§G.10** go-live). Cổng/port:
 > `architecture.md` + `eureka-config.md`. Đây là tài liệu **QA tay**, không phải test tự động
 > (test tự động = 21 unit + 22 IT, chạy `mvn -pl chat-service verify`).
 
