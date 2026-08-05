@@ -2,7 +2,9 @@
 
 > **File này tự chứa.** Mọi thứ cần để đi từ *"chưa có gì"* đến *"EKS chạy rồi và đã destroy sạch"* đều nằm ở đây: click path trong Console, lệnh copy-paste được, bảng verify, và cách kiểm bill về 0. Không phải mở tài liệu nào khác.
 >
-> Tuỳ chọn duy nhất: [`DAY3-EXPLAINED.md`](DAY3-EXPLAINED.md) *(cùng thư mục)* trả lời **"vì sao"** — Terraform là gì, IRSA hoạt động thế nào, vì sao né NAT Gateway. Không đọc vẫn làm được Day 3; đọc thì hiểu mình đang làm gì.
+> 🎓 **Người mới với deploy**: đọc mục [**"Đang dựng cái gì"**](#-đang-dựng-cái-gì--đọc-một-lần-trước-buổi-đầu-tiên) ngay sau *Bản đồ toàn phiên* trước đã (~3 phút) — nó giải thích 3 tầng đang dựng, 2 kho Terraform, và "state" là gì. Từ Phase 6 trở đi mỗi phase có khối **🎓** nói *lệnh này thực sự làm gì*.
+>
+> Tuỳ chọn duy nhất: [`DAY3-EXPLAINED.md`](DAY3-EXPLAINED.md) *(cùng thư mục)* đào sâu hơn **"vì sao"** — Terraform là gì, IRSA hoạt động thế nào, vì sao né NAT Gateway. Không đọc vẫn làm được Day 3.
 
 > ⚠️ **Region = `ap-southeast-1` (Singapore)** xuyên suốt. Đây là bẫy verify phổ biến nhất: Console mở **đúng trang** nhưng góc phải trên đang ở region khác → thấy danh sách rỗng và tưởng code hỏng. Kiểm region **trước** khi kết luận bất cứ thứ gì thiếu.
 
@@ -15,7 +17,7 @@
 | Hạng mục | Giá xấp xỉ | Free-Tier? | Ai tạo | Sống sót `destroy`? |
 |---|---|---|---|---|
 | **EKS control plane** | ~**$0.10/giờ** (~$73/tháng) — tính **kể cả khi 0 pod** | ❌ | Terraform *(ephemeral)* | ❌ |
-| EC2 node `t3.xlarge` **spot** ×2 | ~**$0.13/giờ** tổng | ❌ | Terraform *(ephemeral)* | ❌ |
+| EC2 node `t3.xlarge` **spot** ×2 | ~**$0.16/giờ** tổng *(đo thật: $0.0785–0.0812/máy · on-demand $0.2112 ⇒ rẻ hơn ~63%)* | ❌ | Terraform *(ephemeral)* | ❌ |
 | ALB | ~$0.0225/giờ + LCU | ❌ | AWS LB Controller *(từ Ingress)* | ❌ *nếu xoá Ingress trước* |
 | ~~NAT Gateway~~ | ~~$0.045/giờ~~ | ❌ | **né hoàn toàn — không tạo** | — |
 | EBS gp3 | ~$0.08/GB-tháng · **vẫn tính tiền dù pod đã chết** | ✅ 30 GB free | EBS CSI *(từ PVC)* | ❌ *nếu xoá PVC trước* |
@@ -29,9 +31,9 @@
 
 | Kịch bản | Tiền |
 |---|---|
-| Cụm sống | **~$0.25/giờ** |
-| 1 buổi trọn gói (apply 15' + demo 10' + destroy 10') | ≈ **$0.15** |
-| Chạy 3 giờ | ≈ $0.75 |
+| Cụm sống | **~$0.27/giờ** *(đo thật: EKS $0.10 + 2 node spot $0.158 + gp3 $0.011)* |
+| 1 buổi trọn gói (apply 20' + nghiệm thu 20' + destroy 15') | ≈ **$0.25** |
+| Chạy 3 giờ | ≈ $0.81 |
 | **Quên tắt 1 tháng** | ≈ **$180** |
 | Thường trực giữa các buổi (đã destroy) | **$0.30/tháng** (ECR) → $0.80/tháng sau Day 8 (+ Route53 zone) |
 
@@ -55,11 +57,57 @@
 | **9** 🔴 **`destroy`** | Terminal | 15' | ⏱ dừng | ❌ **BẮT BUỘC** |
 | **10** Commit | Repo | 3' | $0 | 1 lần |
 
-**Cụm sống ≈ 50 phút × ~$0.25/giờ ≈ dưới $0.25 cho cả phiên.**
+**Cụm sống ≈ 55 phút × ~$0.27/giờ ≈ $0.25 cho cả phiên.**
 
 > **Phase 0–5 và 10 làm MỘT LẦN trong đời dự án.** Từ buổi sau, dựng lại cụm chỉ còn **Phase 6 → 7 → 8 → 9**.
 
 > 💡 **Phase 0 chờ lâu thì làm Phase 2–4 song song.** Viết code Terraform **không cần AWS credential** (`terraform validate` chạy offline) — nên nếu quota phải chờ 48h, cứ viết code trước, chỉ `apply` là phải chờ.
+
+---
+
+## 🎓 Đang dựng cái gì — đọc một lần trước buổi đầu tiên
+
+*(Mục này dành cho người mới với deploy. Ai đã quen nhảy thẳng xuống Phase 0.)*
+
+### Ba tầng chồng lên nhau
+
+```
+Tầng 3 · PHẦN MỀM TRONG CỤM   ← Phase 7: StorageClass gp3 · ALB controller · External Secrets
+Tầng 2 · CỤM KUBERNETES        ← Phase 6: EKS control plane + 2 máy EC2 làm node
+Tầng 1 · MẠNG (VPC)            ← Phase 6: mạng riêng ảo · 6 subnet · 3 vùng (AZ)
+```
+
+Mỗi tầng phải có tầng dưới mới dựng được. Đó là lý do một lệnh `terraform apply` mất ~20 phút chứ không phải 2 phút — nó đang xếp hàng chờ nhau.
+
+### Hai kho Terraform tách rời — điều quan trọng nhất phải nhớ
+
+| Kho | Chứa gì | Số phận |
+|---|---|---|
+| `terraform/bootstrap/` | S3 *(giữ state)* · DynamoDB *(khoá)* · 9 ECR *(kho ảnh Docker)* | **Apply 1 lần. VĨNH VIỄN. KHÔNG BAO GIỜ destroy** |
+| `terraform/` | VPC · EKS · 2 node · 4 IRSA role | **Destroy mỗi buổi.** Đây là chỗ tốn tiền |
+
+Tách vậy vì kho ảnh Docker và file state **phải sống sót** qua mỗi lần destroy, còn cụm thì xoá đi dựng lại được. Tiêu chí phân loại: *thứ gì phải sống sót qua `destroy` thì thuộc `bootstrap/`.*
+
+### "State" là gì — hiểu cái này thì hiểu Terraform
+
+File `terraform.tfstate` (nằm trên S3) = **quyển sổ ghi chép** những gì Terraform đã tạo.
+
+Terraform **không nhìn vào AWS** để biết nó đã làm gì — nó **đọc quyển sổ này**. Hệ quả trực tiếp:
+
+- Mất sổ ⇒ Terraform **quên sạch** ⇒ `destroy` không xoá được gì ⇒ tài nguyên thành **mồ côi và cứ thế tính tiền**.
+- Terraform **chỉ xoá được thứ có trong sổ**. Thứ do chương trình khác tạo ra lúc chạy (ALB, ổ đĩa EBS) **không có trong sổ** → xem Phase 9.
+
+Đó là lý do sổ nằm trên **S3 có versioning + `prevent_destroy`**, không nằm trên laptop.
+
+### Cách Terraform làm việc: khai báo, không phải ra lệnh
+
+Bạn **không** viết *"bước 1 tạo mạng, bước 2 tạo cụm"*. Bạn viết trong file `.tf`: *"tôi muốn có 1 VPC, 1 cụm EKS, 2 node"* — rồi Terraform tự:
+
+1. Đọc **sổ state** → biết hiện đang có gì
+2. So với file `.tf` → tính ra **chênh lệch**
+3. Gọi API của AWS theo đúng thứ tự phụ thuộc, ghi sổ sau mỗi việc
+
+Vì vậy chạy `apply` hai lần liên tiếp thì lần hai báo `No changes` — chứ không tạo thêm cụm thứ hai.
 
 ---
 
@@ -351,15 +399,21 @@ terraform apply
 terraform output        # ghi lại: tên bucket state + ECR base URL (Day 4 cần)
 ```
 
-**🥚 Bẫy con-gà-quả-trứng** *(giải thích ở [`DAY3-EXPLAINED.md`](DAY3-EXPLAINED.md) §3.5)*: stack này **tạo ra** chính cái S3 bucket dùng để lưu state, nên nó không thể dùng backend S3 → nó dùng **local state**. Chọn một trong hai:
+**🥚 Bẫy con-gà-quả-trứng** *(giải thích ở [`DAY3-EXPLAINED.md`](DAY3-EXPLAINED.md) §3.5)*: stack này **tạo ra** chính cái S3 bucket dùng để lưu state, nên lần `apply` đầu buộc phải chạy với **local state**. Chọn một trong hai:
 
 ```bash
 # Cách A (khuyến nghị) — đẩy state lên chính bucket vừa tạo, hết lo mất file
-terraform init -migrate-state
+#   BƯỚC 1: bỏ comment khối `backend "s3"` ở CUỐI terraform/bootstrap/versions.tf
+#   BƯỚC 2:
+terraform init -migrate-state     # trả lời "yes" khi hỏi copy existing state
+#   BƯỚC 3 — verify THẬT, đừng tin dòng "successfully initialized":
+aws s3 ls s3://badminton-tfstate-apse1/bootstrap/    # phải thấy terraform.tfstate
 
 # Cách B — giữ local, tự backup RA NGOÀI repo
 cp terraform.tfstate ~/Documents/badminton-bootstrap.tfstate.bak
 ```
+
+> 🔴 **Bước 1 là bắt buộc, đừng bỏ.** `-migrate-state` chỉ kích hoạt khi cấu hình backend **thay đổi**. Chạy nó lúc `versions.tf` chưa có khối `backend` thì Terraform vẫn in `Terraform has been successfully initialized!` — nhưng **không di chuyển gì cả**, state vẫn nằm local. Đây là loại lỗi im lặng: bạn tưởng state đã an toàn trên S3, tới lúc mất laptop mới biết là không.
 
 Mất file này **không mất tài nguyên**, nhưng mất quyền quản lý chúng bằng Terraform (phải `terraform import` lại từng cái).
 
@@ -376,7 +430,32 @@ terraform plan | tee /tmp/day3-plan.txt
 terraform apply                     # ~15-20'; phần lâu nhất là EKS control plane
 ```
 
-Kỳ vọng ~60–70 resource. Ba lỗi hay gặp **ở đúng bước này**:
+### 🎓 Trong 20 phút đó AWS đang dựng gì
+
+| Phút | Đang dựng | Là cái gì |
+|---|---|---|
+| 0–2' | VPC + 6 subnet + route table | Mạng riêng ảo. **3 subnet công khai** (node nằm đây, có IP ra Internet) + 3 riêng tư (dành cho card mạng của control plane) |
+| 2–15' | **EKS control plane** ← lâu nhất | AWS dựng **bộ não Kubernetes** riêng cho bạn, chạy trên nhiều AZ. Đây là thứ tính **$0.10/giờ** *kể cả khi 0 pod* |
+| 15–18' | Add-on `vpc-cni` · `kube-proxy` | Phần mềm mạng, phải xong **trước** khi node tham gia (`before_compute`) |
+| 18–22' | Node group: 2× `t3.xlarge` **spot** | 2 máy chủ thật sẽ chạy app. **~$0.079/giờ mỗi máy** — giá spot đo được, rẻ hơn on-demand ~63% |
+
+> Suốt 10–15 phút ở bước control plane màn hình chỉ in `Still creating... [10m0s elapsed]`. **Đó là bình thường, không phải treo** — cứ để yên.
+
+### Đúng thì thấy gì
+
+```
+Apply complete! Resources: 76 added, 0 changed, 0 destroyed.
+
+Outputs:
+cluster_name = "badminton"
+region = "ap-southeast-1"
+update_kubeconfig_command = "aws eks update-kubeconfig --name badminton ..."
+...
+```
+
+12 dòng `Outputs` là các giá trị **script Phase 7 sẽ đọc** — nhờ vậy `bootstrap.sh` không hardcode một ARN nào.
+
+Kỳ vọng **76 resource** — số đã đếm thật từ `plan`, không phải ước lượng: `module.eks` 42 + `module.vpc` 22 + IRSA 11 + `aws_iam_policy` ở root 1. Ba lỗi hay gặp **ở đúng bước này**:
 
 | Lỗi | Nghĩa | Sửa |
 |---|---|---|
@@ -395,7 +474,22 @@ aws eks update-kubeconfig --name badminton --region ap-southeast-1
 kubectl get nodes                   # 2 dòng · t3.xlarge · Ready
 ```
 
-> 🔴 **Nếu ra `error: You must be logged in to the server (Unauthorized)`**: cụm **không** hỏng. Đây là thiếu access entry (xem Phase 4). Vá **không cần dựng lại cụm**:
+### 🎓 Hai lệnh này làm gì
+
+**`update-kubeconfig`** chỉ ghi file **`~/.kube/config` trên máy bạn** — nói cho lệnh `kubectl` biết *"cụm ở đâu, đăng nhập bằng ai"*. **Không tạo tài nguyên nào, không tốn thêm tiền.** Máy mới hoặc xoá nhầm file thì chạy lại là xong.
+
+**`kubectl get nodes`** là câu chào đầu tiên với cụm — cũng là phép thử xem quyền đã thông chưa.
+
+> 🔴 **Nếu ra `error: You must be logged in to the server (Unauthorized)` — cụm KHÔNG hỏng.**
+>
+> Đây là khái niệm EKS mà người mới hay hiểu nhầm nhất: **có HAI hệ phân quyền TÁCH RỜI nhau.**
+>
+> | | Quản cái gì | Bạn đang là ai |
+> |---|---|---|
+> | **IAM** *(của AWS)* | Gọi API AWS: tạo máy, xoá mạng… | `AdministratorAccess` = **vua** |
+> | **Kubernetes RBAC** *(bên trong cụm)* | Gõ `kubectl`: xem pod, tạo deployment… | mặc định = **người lạ** |
+>
+> `AdministratorAccess` làm bạn thành vua của AWS, nhưng **bên trong Kubernetes bạn vẫn là người lạ**. Cầu nối giữa hai thế giới gọi là **access entry** (Phase 4 đã khai trong code). Vá nóng **không cần dựng lại cụm**:
 > ```bash
 > aws eks create-access-entry --cluster-name badminton \
 >   --principal-arn arn:aws:iam::<12-số>:user/itadmin --type STANDARD
@@ -410,7 +504,25 @@ kubectl get nodes                   # 2 dòng · t3.xlarge · Ready
 ./scripts/bootstrap.sh
 ```
 
-**Thứ tự trong script có ràng buộc thật** *(chi tiết ở [`DAY3-EXPLAINED.md`](DAY3-EXPLAINED.md) §7.4)*: EBS CSI + `gp3` → ALB controller → External Secrets + `ClusterSecretStore`. Từ Day 6 trở đi, ESO phải **Ready trước** khi ArgoCD sync app, nếu không pod khởi động lúc `Secret` chưa tồn tại → `CreateContainerConfigError`.
+### 🎓 Script cài 3 thứ — mỗi thứ để dành cho một Day sau
+
+Cả 3 đều **không tạo máy nào ⇒ không tăng tiền**. Hôm nay chưa dùng tới, nhưng phải chứng minh chúng cài được và chạy đúng.
+
+| # | Cài gì | Là cái gì | Không có thì |
+|---|---|---|---|
+| 1 | **StorageClass `gp3`** | Bản khai báo *"pod nào xin ổ đĩa thì cấp ổ EBS loại gp3"* | **Day 4**: Postgres/Kafka xin ổ đĩa → PVC kẹt `Pending` mãi |
+| 2 | **AWS Load Balancer Controller** | Chương trình canh trong cụm: thấy `Ingress` thì **tự gọi AWS tạo ALB** | **Day 4**: Ingress không có `ADDRESS` → ngoài Internet không vào được hệ thống |
+| 3 | **External Secrets + `ClusterSecretStore` tên `aws-ssm`** | Cầu kéo mật khẩu từ **AWS SSM** vào cụm dưới dạng `Secret` | **Day 6**: pod thiếu mật khẩu DB → `CreateContainerConfigError` |
+
+> ⚠️ **Driver ≠ StorageClass** — chỗ rất dễ nhầm. **EBS CSI driver** (phần mềm dịch *"pod cần 10GB"* → gọi API AWS tạo ổ đĩa) là **EKS managed add-on khai trong `terraform/eks.tf`**, nên nó nằm trong tf state và `destroy` gỡ sạch. Còn **StorageClass `gp3`** là một object *bên trong* Kubernetes → nằm ở script này. Hai thứ khác nhau.
+
+**Thứ tự có 2 ràng buộc thật** *(chi tiết ở [`DAY3-EXPLAINED.md`](DAY3-EXPLAINED.md) §7.4)*: ① CRD của ESO phải `Established` **trước** khi apply `ClusterSecretStore` (script tự `kubectl wait`) · ② cả 3 phải xong **trước Day 6** — ESO phải Ready trước khi ArgoCD sync app, nếu không pod khởi động lúc `Secret` chưa tồn tại → `CreateContainerConfigError`. *(Ba add-on này độc lập nhau, không cái nào bắt buộc phải đứng trước cái nào.)*
+
+### Đúng thì thấy gì
+
+`✔` xanh cho từng bước, cuối cùng `kubectl get clustersecretstore` ra **`STATUS: Valid`**.
+
+Script còn tự kiểm một thứ tinh tế: **node phải có `EXTERNAL-IP`**. Vì thiết kế này **cố tình không dùng NAT Gateway** (né $45/tháng), node ra Internet bằng **IP công khai của chính nó**. Không có IP ⇒ Day 4 mọi pod kẹt `ImagePullBackOff` vì không kéo nổi image từ ECR. Script in `!` cảnh báo nếu thiếu.
 
 🔴 **Không cài cert-manager** ở bất kỳ Day nào. ALB terminate TLS ở tầng AWS và **chỉ nhận cert từ ACM/IAM — nó không đọc được Kubernetes Secret**, mà Secret lại đúng là nơi cert-manager cất cert. Ghép vào thì cert xin về thành công rồi **ALB lờ đi** → không có HTTPS mà chẳng báo lỗi ở đâu. HTTPS của dự án đi bằng **ACM** (Day 8).
 
@@ -419,6 +531,10 @@ kubectl get nodes                   # 2 dòng · t3.xlarge · Ready
 ## Phase 8 — Nghiệm thu (10')
 
 ### 8.1 CLI — nguồn sự thật
+
+> 🎓 **Nguyên tắc: output "thành công" của công cụ KHÔNG phải bằng chứng — phải hỏi thẳng hệ thống đích.**
+>
+> Dòng `Apply complete!` chỉ nói *Terraform nghĩ nó đã xong*. Dự án này đã dính đúng bẫy đó một lần: lệnh `terraform init -migrate-state` in `Terraform has been successfully initialized!` nhưng thực ra **không làm gì cả** (state vẫn nằm local) — không lỗi, không cảnh báo. Chỉ `aws s3 ls` mới lộ ra. Vì vậy mọi thứ dưới đây đều hỏi trực tiếp AWS/Kubernetes.
 
 ```bash
 kubectl get nodes -o wide                                              # 2× t3.xlarge · Ready
@@ -429,6 +545,13 @@ aws ec2 describe-subnets --filters Name=tag:kubernetes.io/role/elb,Values=1 \
   --query 'Subnets[].SubnetId'                                         # KHÔNG rỗng
 aws ec2 describe-nat-gateways --query 'NatGateways[].NatGatewayId'      # PHẢI rỗng
 ```
+
+Bốn lệnh đầu dễ hiểu. **Hai lệnh cuối mới là hai lệnh đáng tiền:**
+
+| Lệnh | Kiểm điều gì | Sai thì lộ khi nào |
+|---|---|---|
+| `describe-subnets --filters …role/elb` | Nhãn `kubernetes.io/role/elb=1` là cách ALB controller **tự tìm ra** nên đặt ALB ở subnet nào | 🔴 **Day 3 vẫn xanh hết** — Day 4 Ingress treo vô hạn, thông báo chỉ nói cụt lủn `couldn't auto-discover subnets` |
+| `describe-nat-gateways` | Phải **rỗng**. Thiết kế này cố tình né NAT | Thấy 1 cái = đang chảy **$45/tháng** âm thầm, không ai báo |
 
 ### 8.2 Console — cross-check `bootstrap` stack *(apply 1 lần, KHÔNG BAO GIỜ destroy)*
 
@@ -478,12 +601,19 @@ aws ec2 describe-nat-gateways --query 'NatGateways[].NatGatewayId'      # PHẢI
 ### 8.6 Tuỳ chọn rất đáng làm — chứng minh IRSA chạy THẬT ngay hôm nay
 
 ```bash
-aws ssm put-parameter --name /badminton/staging/SMOKE_TEST --type SecureString --value "hello-irsa"
-# tạo 1 ExternalSecret trỏ param đó → kubectl get secret → thấy giá trị = IRSA + ESO thông suốt
-aws ssm delete-parameter --name /badminton/staging/SMOKE_TEST
+./scripts/smoke-irsa.sh          # tự dọn sạch kể cả khi lỗi giữa chừng
 ```
 
-`clustersecretstore = Valid` mới chỉ chứng minh ESO **xác thực** được với AWS. Kéo được **một param thật** mới chứng minh **policy đủ quyền**. Sai policy mà không test thì tới Day 6 mới lộ — lúc đó lẫn vào 20 thứ khác đang hỏng.
+Script làm đúng 4 việc: tạo 1 `SecureString` trên SSM (giá trị **ngẫu nhiên** để Secret cũ còn sót không đậu giả) → apply 1 `ExternalSecret` trỏ store `aws-ssm` → chờ `condition=Ready` → **đối chiếu giá trị thật** trong Kubernetes Secret. Rồi xoá cả ba.
+
+`clustersecretstore = Valid` mới chỉ chứng minh ESO **xác thực** được với AWS (assume-role qua OIDC chạy). Kéo được **một param thật** mới chứng minh **policy đủ quyền**. Sai policy mà không test thì tới Day 6 mới lộ — lúc đó lẫn vào 20 thứ khác đang hỏng.
+
+Hai lỗi mà `Valid` **không** bắt được, script này bắt:
+
+| Triệu chứng khi fail | Nguyên nhân |
+|---|---|
+| `AccessDeniedException … kms:Decrypt` | Đọc được **tên** param nhưng không mở được `SecureString` — thiếu `kms:Decrypt` (điều kiện `kms:ViaService`) |
+| `AccessDeniedException … DescribeParameters` | Action này **không hỗ trợ resource-level** → bắt buộc `Resource: "*"`. Viết scoped thì policy **hợp lệ, deploy sạch, không báo lỗi ở đâu** nhưng mọi lời gọi bị từ chối **im lặng** |
 
 ---
 
@@ -497,6 +627,16 @@ Hôm nay **chưa** có ArgoCD, chưa có PVC, chưa có Ingress — nên bản d
 helm uninstall aws-lb-controller -n kube-system   # nếu script đã cài; hôm nay chưa tạo ALB nào
 cd terraform && terraform destroy                 # ~10-15'
 ```
+
+> 🎓 **Vì sao phải gỡ controller TRƯỚC, không destroy thẳng?**
+>
+> Nhớ lại quyển sổ state: **Terraform chỉ xoá được thứ có trong sổ.**
+>
+> ALB và ổ đĩa EBS **không do Terraform tạo** — chúng do **controller bên trong cụm** tạo ra lúc chạy, khi thấy `Ingress`/`PVC`. Chúng **không có trong sổ** ⇒ `terraform destroy` **không biết chúng tồn tại** ⇒ bỏ lại ⇒ **vẫn tính tiền**.
+>
+> Hôm nay chưa tạo `Ingress`/`PVC` nào nên chưa có ALB/EBS để mồ côi — bản rút gọn là đủ. **Từ Day 4 bắt buộc dùng bản đầy đủ ở §9.2 ngay dưới.**
+
+> ⚠️ **`destroy` phải chạy XONG.** Ctrl-C giữa chừng để lại state nửa vời — **tệ hơn không chạy**. Lỡ bấm thì chạy lại `terraform destroy`.
 
 ### 9.2 ⚠️ Từ Day 4 trở đi phải dùng bản ĐẦY ĐỦ này
 

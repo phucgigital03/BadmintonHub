@@ -83,7 +83,7 @@ flowchart TB
   end
 
   subgraph EPH["♻️ terraform/ — destroy mỗi tối"]
-    VPC["VPC · 2 AZ<br/>public + private subnet<br/>KHÔNG NAT Gateway"]
+    VPC["VPC · 3 AZ<br/>public + private subnet<br/>KHÔNG NAT Gateway"]
     subgraph EKS["EKS cluster: badminton"]
       CP["Control plane<br/>AWS quản · 0.10 USD/giờ"]
       N1["node 1 · t3.xlarge spot"]
@@ -245,7 +245,8 @@ output "cluster_endpoint" { value = module.eks.cluster_endpoint }
 
 - **Region** = một thành phố. Dự án dùng `ap-southeast-1` (Singapore). Chọn một, dùng suốt.
 - **AZ (Availability Zone)** = một toà datacenter trong thành phố đó: `ap-southeast-1a`, `-1b`… Hỏng độc lập nhau.
-- 🔴 **EKS bắt buộc subnet ở ≥ 2 AZ.** Đó là lý do kế hoạch viết "2 AZ" — ràng buộc kỹ thuật, không phải cho đẹp.
+- 🔴 **EKS bắt buộc subnet ở ≥ 2 AZ.** Đó là ràng buộc kỹ thuật, không phải cho đẹp.
+- ✅ **Code thực tế dùng 3 AZ** (`ap-southeast-1a/b/c`, xem `terraform/variables.tf`) chứ không dừng ở mức tối thiểu 2. Lý do không phải "chống hỏng datacenter" — demo có sập cũng chẳng sao — mà là **spot**: node group cần tìm được `t3.xlarge` giá spot, và AWS chọn theo AZ. Với 2 AZ, một zone cạn hàng là `terraform apply` chết giữa chừng với `Unsupported instance type in availability zone` **sau khi** control plane đã dựng xong, tức đang tính tiền. AZ thứ 3 cho node group thêm một cửa để lách. Subnet **không tính tiền**, nên bảo hiểm này miễn phí.
 
 ### 4.2 VPC = mạng LAN riêng của bạn trên AWS
 
@@ -253,11 +254,15 @@ Nhớ Day 1: `docker compose` tạo một network ảo, container gọi nhau b�
 
 ```
 VPC  10.0.0.0/16
-├── public  subnet 10.0.101.0/24 (AZ-a) ─┐ route 0.0.0.0/0 → Internet Gateway
-├── public  subnet 10.0.102.0/24 (AZ-b) ─┘ → ALB đứng đây · và (dự án này) CẢ NODE
-├── private subnet 10.0.1.0/24   (AZ-a) ─┐ không có route ra Internet
-└── private subnet 10.0.2.0/24   (AZ-b) ─┘
+├── public  subnet 10.0.96.0/19  (AZ-a) ─┐
+├── public  subnet 10.0.128.0/19 (AZ-b) ─┤ route 0.0.0.0/0 → Internet Gateway
+├── public  subnet 10.0.160.0/19 (AZ-c) ─┘ → ALB đứng đây · và (dự án này) CẢ NODE
+├── private subnet 10.0.0.0/19   (AZ-a) ─┐
+├── private subnet 10.0.32.0/19  (AZ-b) ─┤ không có route ra Internet
+└── private subnet 10.0.64.0/19  (AZ-c) ─┘ → chỉ chứa ENI của control plane
 ```
+
+> **Vì sao subnet to đến `/19` (8190 IP) chứ không phải `/24` (251 IP)?** Vì **VPC CNI cấp một IP THẬT của VPC cho MỖI POD**, không phải mỗi node — pod trong EKS là công dân hạng nhất của mạng VPC. Một `t3.xlarge` chạy được tới ~58 pod, và Day 4 sẽ có staging + prod + observability cùng lúc. `/24` sẽ hết IP trước khi hết RAM, mà lỗi lúc đó (`failed to assign an IP address to container`) trông chẳng liên quan gì tới subnet. Địa chỉ private IP không tính tiền → cứ để rộng.
 
 | Thành phần | Việc của nó |
 |---|---|
