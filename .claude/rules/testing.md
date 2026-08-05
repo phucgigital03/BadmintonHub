@@ -70,5 +70,29 @@ mvn -pl {service} verify     # unit + integration (*IT, Testcontainers) — ch�
 mvn clean install -DskipTests   # build bỏ qua cả surefire + failsafe
 ```
 
+## 🔴 Máy mới: ghim `api.version` cho Testcontainers (một lần)
+
+Triệu chứng: **mọi `*IT` chết ngay khi load context** với `Could not find a valid Docker
+environment` — trong khi `docker info`, `docker ps` đều chạy bình thường. Unit test vẫn xanh.
+
+Nguyên nhân: **Docker Engine 29 bỏ hỗ trợ Docker API < 1.40**, nhưng docker-java (đi kèm
+Testcontainers 1.19.7 do Spring Boot 3.2.5 BOM ghim) vẫn thương lượng **API 1.32** → daemon
+trả **HTTP 400 kèm payload rỗng**, Testcontainers đọc thành "không tìm thấy Docker". Kiểm chứng:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' --unix-socket /var/run/docker.sock http://localhost/v1.32/info  # 400
+curl -s -o /dev/null -w '%{http_code}\n' --unix-socket /var/run/docker.sock http://localhost/v1.44/info  # 200
+```
+
+Vá — tạo **`~/.docker-java.properties`** (ngoài repo, docker-java tự đọc, áp cho mọi service):
+
+```properties
+api.version=1.44
+```
+
+Cố ý **KHÔNG** ghim vào `pom.xml`: máy/CI runner nào có Docker cũ hơn 25 (API < 1.44) sẽ bị
+chính dòng đó làm hỏng ngược. Chạy một lần cho mỗi máy dev. Vá tạm không tạo file:
+`mvn -pl {service} verify -Dapi.version=1.44`.
+
 ## Backlog (chưa bật — ngoài phạm vi dev)
 GitHub Actions CI · JaCoCo coverage gate · e2e/QA suite cross-service · load test.

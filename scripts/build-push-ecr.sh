@@ -67,7 +67,20 @@ fmt_dur() { printf '%02d:%02d' $(( $1 / 60 )) $(( $1 % 60 )); }
 log "Kiểm tra điều kiện"
 
 command -v docker >/dev/null || die "Không thấy docker. Mở Docker Desktop rồi chạy lại."
-docker info >/dev/null 2>&1 || die "Docker daemon chưa chạy. Mở Docker Desktop rồi chạy lại."
+
+# `docker info` THOÁT 0 kể cả khi Docker Desktop mới bật và engine còn đang khởi động —
+# lúc đó nó trả về một Info rỗng. Phải kiểm một trường CÓ THẬT thì mới biết engine sẵn sàng.
+# (Bỏ qua bước này thì build chạy được vài giây rồi chết với lỗi trông chẳng liên quan.)
+DOCKER_READY=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  DOCKER_READY="$(docker info --format '{{.ServerVersion}}' 2>/dev/null || true)"
+  [ -n "$DOCKER_READY" ] && break
+  printf '  … chờ Docker engine khởi động xong\n'
+  sleep 5
+done
+[ -n "$DOCKER_READY" ] || die "Docker engine chưa sẵn sàng sau 60 giây.
+     Mở Docker Desktop, đợi biểu tượng cá voi hết nhấp nháy, rồi chạy lại.
+     Kiểm bằng tay:  docker info --format '{{.ServerVersion}}'   (phải in ra số version)"
 command -v aws >/dev/null || die "Không thấy aws CLI."
 command -v git >/dev/null || die "Không thấy git."
 
