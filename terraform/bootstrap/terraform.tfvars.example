@@ -1,0 +1,16 @@
+# Copy thành terraform.tfvars nếu muốn đổi mặc định.
+# ⚠️ *.tfvars bị .gitignore chặn (chỉ *.tfvars.example được commit) — cố ý, để giá trị
+#    riêng của bạn không lọt lên repo public.
+#
+# Mặc định trong variables.tf đã chạy được ngay, KHÔNG cần file này.
+
+# region  = "ap-southeast-1"
+# project = "badminton"
+
+# Tên S3 là unique TOÀN CẦU. Nếu apply báo BucketAlreadyExists thì đổi ở ĐÚNG 2 CHỖ:
+#   1. dòng dưới đây
+#   2. literal `bucket` trong ../backend.tf
+# state_bucket_name = "badminton-tfstate-apse1"
+# lock_table_name   = "badminton-tflock"
+
+# ecr_keep_last_images = 10

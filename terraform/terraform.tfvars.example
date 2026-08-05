@@ -1,0 +1,26 @@
+# Copy thành terraform.tfvars nếu muốn đổi mặc định.
+# ⚠️ *.tfvars bị .gitignore chặn (chỉ *.tfvars.example được commit) — cố ý, để giá trị
+#    riêng của bạn không lọt lên repo public.
+#
+# Mặc định trong variables.tf đã chạy được ngay, KHÔNG cần file này.
+
+# region          = "ap-southeast-1"
+# cluster_name    = "badminton"
+# cluster_version = "1.33"
+
+# Spot t3.xlarge hết hàng ở một AZ? Bỏ AZ đó ra rồi apply lại.
+# azs = ["ap-southeast-1a", "ap-southeast-1b", "ap-southeast-1c"]
+
+# Quota On-Demand cũng đã ở 16 → đổi được nếu spot khan hàng cả 3 AZ.
+# node_capacity_type = "ON_DEMAND"
+
+# Fallback khi quota vCPU chỉ được duyệt 5-8: t3.large ×2 = 4 vCPU, nhưng CHỈ đủ chạy 1 env.
+# node_instance_types = ["t3.large"]
+
+# Cấp quyền admin trong cụm cho principal KHÁC người chạy apply
+# (người chạy apply đã tự có qua enable_cluster_creator_admin_permissions).
+# Ví dụ role CI của Day 5:
+# additional_cluster_admin_arns = ["arn:aws:iam::123456789012:role/github-actions"]
+
+# Bật log control plane khi cần điều tra Unauthorized / ai gọi API nào.
+# cluster_enabled_log_types = ["audit", "authenticator"]
