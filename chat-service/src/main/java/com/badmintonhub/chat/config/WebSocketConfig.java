@@ -19,8 +19,14 @@ import org.springframework.web.socket.handler.WebSocketHandlerDecorator;
  * STOMP-over-WebSocket setup (UC_Chatting §C/§D/§E.2/§G.1).
  *
  * <ul>
- *   <li>Handshake endpoint {@code /ws} (public at the gateway; auth is at the CONNECT frame). CORS origin =
- *       {@code FRONTEND_URL}.</li>
+ *   <li>Handshake endpoint {@code /ws} (public at the gateway; auth is at the CONNECT frame). The handshake
+ *       Origin allow-list is {@code FRONTEND_URL} (comma-separated patterns), defaulting to {@code *}.
+ *       Browsers send an {@code Origin} header on EVERY WebSocket handshake — even a same-origin one — and
+ *       behind the ALB that origin is a DNS name that changes on every {@code terraform apply}, so pinning
+ *       it to one host would mean editing values + resyncing on every cluster rebuild. Safe to leave open
+ *       because the real gate is the CONNECT-frame Bearer token (§G.1), not Origin: a cross-origin page
+ *       cannot read our localStorage, so it cannot forge a valid CONNECT. Set {@code FRONTEND_URL} to the
+ *       real domain once there is one (Day 8) — no code change needed.</li>
  *   <li>Broker: RabbitMQ STOMP relay for cross-instance fan-out (§D.11) when {@code app.broker.relay=true};
  *       otherwise an in-memory simple broker (local/test — no RabbitMQ needed). Client destinations are
  *       identical either way; only ~2 config lines differ. Broker prefixes are {@code /topic}+{@code /queue}
@@ -38,7 +44,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final StompAuthChannelInterceptor stompAuthInterceptor;
     private final WebSocketSessionTracker sessionTracker;
 
-    @Value("${app.frontend-url:http://localhost:5173}")
+    /** Comma-separated Origin patterns allowed on the {@code /ws} handshake. See the class javadoc. */
+    @Value("${app.frontend-url:*}")
     private String frontendUrl;
 
     @Value("${app.broker.relay:true}")
@@ -58,7 +65,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
-        registry.addEndpoint("/ws").setAllowedOrigins(frontendUrl);
+        // Patterns (not setAllowedOrigins): only the *Patterns variant accepts "*".
+        registry.addEndpoint("/ws").setAllowedOriginPatterns(frontendUrl.split(","));
         // Native WebSocket only (@stomp/stompjs on the FE) — no SockJS fallback.
     }
 

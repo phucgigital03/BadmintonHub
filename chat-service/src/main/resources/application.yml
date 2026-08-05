@@ -36,13 +36,16 @@ cloudinary:
 jwt:
   secret: ${JWT_SECRET}
 
-# WebSocket handshake CORS (setAllowedOrigins) — same origin var the FE runs on.
+# WebSocket handshake Origin allow-list (setAllowedOriginPatterns) — comma-separated patterns.
+# Default "*": the browser sends Origin on every WS handshake and behind the ALB that host changes on
+# every `terraform apply`. The real gate is the CONNECT-frame Bearer token, not Origin. Set FRONTEND_URL
+# to the real domain once there is one (Day 8) to tighten it without a code change.
 # RabbitMQ STOMP relay (broker for enableStompBrokerRelay) — §D.11 / §E.6. Custom namespace (NOT
 # spring.rabbitmq) so no AMQP auto-config is triggered. Dev defaults match docker-compose (rabbitmq_stomp
 # plugin :61613, user/pass badminton); prod overrides via env.
 # broker.relay=true → RabbitMQ relay (cross-instance fan-out); false → in-memory simple broker (local/test).
 app:
-  frontend-url: ${FRONTEND_URL:http://localhost:5173}
+  frontend-url: ${FRONTEND_URL:*}
   broker:
     relay: ${CHAT_BROKER_RELAY:true}
     host: ${RABBITMQ_HOST:localhost}
