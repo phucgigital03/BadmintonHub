@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import type { ReactNode } from 'react';
 import { chatApi } from '../../api/chat';
 import { useChatSocket } from '../../hooks/useChatSocket';
+import { uuid } from '../../lib/uuid';
 import type { ChatMessage, ChatSenderRole, DeliveryReceipt, ReadReceipt, TypingSignal } from '../../types';
 
 const PAGE = 30;
@@ -162,7 +163,7 @@ export function ChatThread({ conversationId, meId, myRole, senderName, canSend =
   async function sendText() {
     const content = draft.trim();
     if (!content) return;
-    const clientMsgId = crypto.randomUUID();
+    const clientMsgId = uuid();
     const optimistic: ChatMessage = {
       id: `tmp-${clientMsgId}`, conversationId, senderId: meId, senderRole: myRole, senderName,
       type: 'TEXT', content, imageUrl: null, clientMsgId, deliveredAt: null, readAt: null,
@@ -189,7 +190,7 @@ export function ChatThread({ conversationId, meId, myRole, senderName, canSend =
     }
     setUploading(true);
     try {
-      const saved = await chatApi.sendImage(conversationId, file, { clientMsgId: crypto.randomUUID(), senderName });
+      const saved = await chatApi.sendImage(conversationId, file, { clientMsgId: uuid(), senderName });
       appendMessage(saved);
     } catch {
       toast.error('Gửi ảnh thất bại');

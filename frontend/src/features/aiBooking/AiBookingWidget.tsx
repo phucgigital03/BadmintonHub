@@ -11,6 +11,7 @@ import {
   type SessionSnapshot,
 } from '../../api/aiAssistant';
 import { bookingItemLabel } from '../../api/bookings';
+import { uuid } from '../../lib/uuid';
 import type { PaymentSummary } from '../../components/payment/PaymentScreen';
 import { ProposalCard } from './ProposalCard';
 
@@ -97,19 +98,19 @@ export function AiBookingWidget() {
 
   function hydrate(snap: SessionSnapshot) {
     const msgs: AiChatMessage[] = snap.transcript.map((t) => ({
-      id: crypto.randomUUID(),
+      id: uuid(),
       role: t.role === 'user' ? 'user' : 'assistant',
       content: t.content,
     }));
     if (snap.awaitingConfirm && snap.proposal) {
       msgs.push({
-        id: crypto.randomUUID(),
+        id: uuid(),
         role: 'assistant',
         content: '',
         cards: [{ type: 'proposal', proposal: snap.proposal, option: null }],
       });
     }
-    setMessages(msgs.length ? msgs : [{ id: crypto.randomUUID(), role: 'assistant', content: WELCOME }]);
+    setMessages(msgs.length ? msgs : [{ id: uuid(), role: 'assistant', content: WELCOME }]);
     setAwaitingConfirm(snap.awaitingConfirm);
     setSuggestions([]);
   }
@@ -117,7 +118,7 @@ export function AiBookingWidget() {
   function startFresh(id: string) {
     setSessionId(id);
     persist(id);
-    setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: WELCOME }]);
+    setMessages([{ id: uuid(), role: 'assistant', content: WELCOME }]);
     setSuggestions(WELCOME_SUGGESTIONS);
     setAwaitingConfirm(false);
   }
@@ -172,7 +173,7 @@ export function AiBookingWidget() {
     if (!trimmed || !sessionId || sending) return;
     setDraft('');
     setSuggestions([]);
-    setMessages((m) => [...m, { id: crypto.randomUUID(), role: 'user', content: trimmed }]);
+    setMessages((m) => [...m, { id: uuid(), role: 'user', content: trimmed }]);
     setSending(true);
     setThinking('Đang xử lý…');
 
@@ -197,7 +198,7 @@ export function AiBookingWidget() {
             setMessages((m) => [
               ...m,
               {
-                id: crypto.randomUUID(),
+                id: uuid(),
                 role: 'assistant',
                 content: turn.content,
                 cards: turn.cards?.length ? turn.cards : undefined,
@@ -247,7 +248,7 @@ export function AiBookingWidget() {
         setMessages((m) => [
           ...m,
           {
-            id: crypto.randomUUID(),
+            id: uuid(),
             role: 'assistant',
             content: turn.content,
             cards: turn.cards?.length ? turn.cards : undefined,

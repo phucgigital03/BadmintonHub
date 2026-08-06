@@ -4,6 +4,7 @@ import { useAuthStore } from '../../store/authStore';
 import { useSupportChatStore } from '../../store/supportChatStore';
 import { useChatSocket } from '../../hooks/useChatSocket';
 import { chatApi } from '../../api/chat';
+import { uuid } from '../../lib/uuid';
 import { ChatThread } from './ChatThread';
 
 /**
@@ -56,7 +57,7 @@ export function CustomerChatWidget() {
         const id = await ensureConversation();
         if (prefill && id) {
           await chatApi.send(id, {
-            clientMsgId: crypto.randomUUID(),
+            clientMsgId: uuid(),
             content: prefill,
             senderName: user!.fullName,
           });

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { uuid } from '../lib/uuid';
 
 export interface Notif {
   id: string;
@@ -20,6 +21,6 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   ],
   unread: () => get().items.filter((n) => !n.read).length,
   add: (title) =>
-    set((s) => ({ items: [{ id: crypto.randomUUID(), title, read: false }, ...s.items] })),
+    set((s) => ({ items: [{ id: uuid(), title, read: false }, ...s.items] })),
   markAllRead: () => set((s) => ({ items: s.items.map((n) => ({ ...n, read: true })) })),
 }));
