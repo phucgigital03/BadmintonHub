@@ -45,6 +45,17 @@
         <lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
         <spring-dotenv.version>3.0.0</spring-dotenv.version>
         <jjwt.version>0.12.6</jjwt.version>
+
+        <!-- SonarCloud (CI Day 5). Không phải bí mật — token mới là bí mật và nằm
+             ở GitHub Secrets. Hai key dưới đây lấy từ trang project trên
+             sonarcloud.io sau khi import repo; sai key thì phân tích chạy xong
+             mà đẩy vào một project khác (hoặc lỗi "project not found"). -->
+        <sonar.host.url>https://sonarcloud.io</sonar.host.url>
+        <sonar.organization>phucgigital03</sonar.organization>
+        <sonar.projectKey>phucgigital03_BadmintonHub</sonar.projectKey>
+        <!-- ai-service là Python, không nằm trong Maven reactor → Sonar không thấy.
+             frontend cũng vậy. Cả hai đưa vào phân tích sau nếu cần. -->
+        <sonar.exclusions>**/target/**,**/node_modules/**,frontend/dist/**</sonar.exclusions>
     </properties>
 
     <dependencyManagement>
