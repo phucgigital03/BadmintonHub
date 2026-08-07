@@ -14,6 +14,9 @@
 [![MongoDB](https://img.shields.io/badge/MongoDB-7-47A248?style=flat-square&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 
+[![CI](https://github.com/phucgigital03/BadmintonHub/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/phucgigital03/BadmintonHub/actions/workflows/ci.yml)
+[![Terraform](https://github.com/phucgigital03/BadmintonHub/actions/workflows/terraform.yml/badge.svg?branch=main)](https://github.com/phucgigital03/BadmintonHub/actions/workflows/terraform.yml)
+
 **[📦 GitOps Repository](https://github.com/phucgigital03/BadmintonHub-GitOps)** · **[🚀 CI/CD Overview](https://claude.ai/code/artifact/7e3f764d-8809-40d0-9510-cb54693cdfcd)**
 
 *Deployment lives in a separate GitOps repo — Terraform → EKS · GitHub Actions → ECR · Helm + ArgoCD.*

@@ -1,0 +1,511 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# CI ứng dụng — Day 5
+#
+# Hai pha, tách theo SỰ KIỆN git chứ không theo nhánh:
+#   • pull_request → main : validate  (build + test + Sonar). KHÔNG chạm AWS.
+#   • push        → main : release   (+ Docker amd64 → Trivy → ECR → bump gitops)
+#
+# Vì sao PR không được chạm AWS: repo này PUBLIC. Bất kỳ ai cũng mở được PR, và
+# nội dung PR là code sẽ được chạy. Cấp credential AWS cho run đó là đưa chìa
+# khoá cho người lạ. Đây là ranh giới bảo mật, không phải tối ưu tốc độ.
+#
+# CI KHÔNG BAO GIỜ chạm vào cụm EKS — không kubectl, không quyền vào cluster.
+# Nó chỉ đẩy image lên ECR rồi ghi tag mới vào repo gitops. ArgoCD (Day 6) mới
+# là thứ kéo thay đổi đó vào cụm.
+#
+# Push nhánh feature mà CHƯA mở PR thì không có gì chạy — đúng như thiết kế.
+# ══════════════════════════════════════════════════════════════════════════════
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Push liên tiếp vào cùng một PR thì huỷ run cũ — khỏi tốn runner cho code đã cũ.
+# KHÔNG huỷ trên main: mỗi commit ở đó phải có image tương ứng trong ECR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-1
+  JAVA_VERSION: "21"
+  # Đổi version = đổi kết quả phân tích. Ghim để cụm hôm nay và tuần sau giống nhau.
+  SONAR_PLUGIN: org.sonarsource.scanner.maven:sonar-maven-plugin:5.1.0.4751
+
+jobs:
+  # ── 1. Service nào thật sự đổi? ─────────────────────────────────────────────
+  # Không có bước này thì sửa 1 dòng ở chat-service cũng build lại cả 9 image.
+  changes:
+    name: Phát hiện thay đổi
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      services: ${{ steps.compose.outputs.services }}
+      others: ${{ steps.filter.outputs.others }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # `shared` là YAML anchor: đụng vào common/pom/Dockerfile thì MỌI
+          # service Java phải build lại, vì tất cả đều depend vào chúng.
+          filters: |
+            shared: &shared
+              - 'pom.xml'
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'common/**'
+              - 'common-security/**'
+              - 'common-test/**'
+              - '.github/workflows/ci.yml'
+            eureka-server:
+              - *shared
+              - 'eureka-server/**'
+            api-gateway:
+              - *shared
+              - 'api-gateway/**'
+            user-service:
+              - *shared
+              - 'user-service/**'
+            court-service:
+              - *shared
+              - 'court-service/**'
+            booking-service:
+              - *shared
+              - 'booking-service/**'
+            payment-service:
+              - *shared
+              - 'payment-service/**'
+            escrow-service:
+              - *shared
+              - 'escrow-service/**'
+            chat-service:
+              - *shared
+              - 'chat-service/**'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/ci.yml'
+            others:
+              - *shared
+              - 'matchmaking-service/**'
+              - 'coach-service/**'
+              - 'notification-service/**'
+              - 'event-service/**'
+
+      # paths-filter trả về TẤT CẢ filter khớp, gồm cả `shared` và `others` vốn
+      # không phải service. Lọc ra danh sách sạch để làm matrix.
+      - name: Dựng danh sách service
+        id: compose
+        run: |
+          set -euo pipefail
+          services=$(jq -c '[.[] | select(. != "shared" and . != "others")]' \
+            <<<'${{ steps.filter.outputs.changes }}')
+          echo "services=$services" >> "$GITHUB_OUTPUT"
+          echo "Sẽ build: $services"
+
+  # ── 2. Build + test + đóng gói từng service ─────────────────────────────────
+  build:
+    name: Build ${{ matrix.service }}
+    needs: changes
+    if: needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      # Cần cho OIDC ở bước push ECR. Trên PR quyền này vẫn được cấp, nhưng
+      # KHÔNG dùng được: trust policy của role đòi sub = ...:ref:refs/heads/main,
+      # còn token của PR mang sub = ...:pull_request → AssumeRole bị từ chối.
+      # Tuyến phòng thủ thật nằm ở trust policy, không phải ở dòng `if`.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Chuẩn bị biến
+        id: meta
+        run: |
+          set -euo pipefail
+          # Short SHA 7 ký tự — KHỚP với scripts/build-push-ecr.sh và với các
+          # tag đang nằm trong values/*.yaml. Dùng github.sha (40 ký tự) sẽ tạo
+          # ra hai tag khác nhau cho cùng một commit.
+          echo "sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          case "${{ matrix.service }}" in
+            eureka-server)   port=8761 ;;
+            api-gateway)     port=3000 ;;
+            user-service)    port=3001 ;;
+            court-service)   port=3002 ;;
+            booking-service) port=3003 ;;
+            payment-service) port=3006 ;;
+            escrow-service)  port=3007 ;;
+            chat-service)    port=3011 ;;
+            frontend)        port=80   ;;
+            *) echo "::error::service không có trong bảng port: ${{ matrix.service }}"; exit 1 ;;
+          esac
+          echo "port=$port" >> "$GITHUB_OUTPUT"
+
+      # --- Nhánh Java -----------------------------------------------------------
+      - uses: actions/setup-java@v4
+        if: matrix.service != 'frontend'
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Test (Maven + Testcontainers)
+        if: matrix.service != 'frontend'
+        # -am kéo theo common/common-security/common-test. Runner ubuntu-latest
+        # có sẵn Docker daemon nên các *IT dùng Testcontainers chạy được.
+        run: mvn -B -ntp -pl ${{ matrix.service }} -am verify
+
+      # --- Nhánh frontend -------------------------------------------------------
+      - uses: actions/setup-node@v4
+        if: matrix.service == 'frontend'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Lint frontend
+        if: matrix.service == 'frontend'
+        working-directory: frontend
+        # ⚠️ KHÔNG chặn merge (đo được 2026-08-07: 12 lỗi có sẵn ở 7 file, hầu hết
+        # là react-hooks/purity). Bật gate ngay từ đầu = job đỏ mọi lần merge vì
+        # nợ cũ, rồi gate bị tắt — đúng cái bẫy đã tránh với Trivy và Checkstyle.
+        # Danh sách lỗi vẫn in đầy đủ trong log để theo dõi.
+        #
+        # 🔒 Type-check KHÔNG mất: `npm run build` bên trong image chạy `tsc -b`,
+        #    nên lỗi kiểu TypeScript vẫn làm hỏng bước build image ở dưới.
+        #
+        # Siết thành gate thật = xoá đúng dòng `continue-on-error` dưới đây.
+        continue-on-error: true
+        run: |
+          npm ci
+          npm run lint
+
+      # --- Đóng gói image -------------------------------------------------------
+      - uses: docker/setup-buildx-action@v3
+
+      # Hai bước build tách riêng vì repo chỉ có ĐÚNG 2 Dockerfile với 2 build
+      # context khác nhau: root cho 8 service Java (pom gốc là aggregator 15
+      # module nên phải COPY cả repo), ./frontend cho FE.
+      - name: Build image Java (linux/amd64)
+        if: matrix.service != 'frontend'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: local/${{ matrix.service }}:${{ steps.meta.outputs.sha }}
+          build-args: |
+            SERVICE=${{ matrix.service }}
+            PORT=${{ steps.meta.outputs.port }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Build image frontend (linux/amd64)
+        if: matrix.service == 'frontend'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: local/frontend:${{ steps.meta.outputs.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      # Quét TRƯỚC khi push: image lỗi không bao giờ được nằm trong ECR.
+      # ignore-unfixed BẮT BUỘC — base eclipse-temurin:21-jre gần như luôn có
+      # HIGH CVE chưa có bản vá; thiếu cờ này thì gate đỏ mọi merge ngay từ ngày
+      # đầu, và kết cục thực tế là gate bị tắt ⇒ mất luôn giá trị.
+      - name: Quét lỗ hổng (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: local/${{ matrix.service }}:${{ steps.meta.outputs.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+          exit-code: "1"
+
+      # --- Chỉ chạy khi merge vào main -----------------------------------------
+      - name: Lấy credential AWS (OIDC)
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ECR_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Đăng nhập ECR
+        if: github.event_name == 'push'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push image + nghiệm thu kiến trúc
+        if: github.event_name == 'push'
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          # Thiếu secret thì IMG thành "/booking-service:abc1234" và docker push
+          # báo một lỗi hoàn toàn không gợi ý gì tới nguyên nhân. Chặn sớm.
+          if [ -z "${ECR_REGISTRY:-}" ]; then
+            echo "::error::Chưa cấu hình secret ECR_REGISTRY (<account-id>.dkr.ecr.${AWS_REGION}.amazonaws.com)."
+            exit 1
+          fi
+          SRC="local/${{ matrix.service }}:${{ steps.meta.outputs.sha }}"
+          IMG="${ECR_REGISTRY}/${{ matrix.service }}:${{ steps.meta.outputs.sha }}"
+          docker tag "$SRC" "$IMG"
+          docker push "$IMG"
+
+          # Push thành công KHÔNG chứng minh đúng kiến trúc: image arm64 vẫn
+          # push sạch rồi mới chết trên cụm bằng `exec format error`, mà log ứng
+          # dụng không nói gì. Hỏi lại chính registry mới là bằng chứng.
+          # Hai cách đọc, vì output của imagetools khác nhau giữa manifest đơn và
+          # manifest index — giống cách scripts/build-push-ecr.sh làm.
+          arch=$(docker buildx imagetools inspect "$IMG" 2>/dev/null \
+                 | awk '/^Platform:/ {print $2; exit}')
+          if [ -z "$arch" ]; then
+            arch=$(docker buildx imagetools inspect "$IMG" \
+                   --format '{{.Image.Platform.OS}}/{{.Image.Platform.Architecture}}')
+          fi
+          echo "Kiến trúc trong ECR: $arch"
+          [ "$arch" = "linux/amd64" ] || { echo "::error::sai kiến trúc: $arch"; exit 1; }
+
+  # ── 3. 4 module chưa deploy vẫn phải biên dịch được ─────────────────────────
+  # matchmaking / coach / notification / event nằm trong Maven reactor nhưng
+  # không có ECR repo. Không có job này thì sửa chúng là KHÔNG có CI nào chạy.
+  validate_others:
+    name: Validate module chưa deploy
+    needs: changes
+    if: needs.changes.outputs.others == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+      - run: >
+          mvn -B -ntp -am verify
+          -pl matchmaking-service,coach-service,notification-service,event-service
+
+  # ── 4. SonarCloud — phân tích, KHÔNG chặn merge ─────────────────────────────
+  # continue-on-error: repo chưa có JaCoCo và user-service chưa có test nào, nên
+  # quality gate mặc định (coverage ≥80% code mới) sẽ đỏ mọi PR. Siết lại bằng
+  # cách thêm `-Dsonar.qualitygate.wait=true` và bỏ dòng continue-on-error, khi
+  # đã có coverage thật.
+  #
+  # Chạy MỘT LẦN trên toàn reactor, không nằm trong matrix: Sonar gắn kết quả
+  # vào một project key duy nhất, chạy per-service sẽ là nhiều phân tích cục bộ
+  # ghi đè lên nhau.
+  sonar:
+    name: SonarCloud (không chặn merge)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    # PR từ fork không được cấp secret → bỏ qua thay vì đỏ.
+    if: >
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Sonar cần toàn bộ lịch sử để xác định đâu là "new code".
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+      - uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: sonar-${{ runner.os }}
+      - name: Phân tích
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -z "${SONAR_TOKEN:-}" ]; then
+            echo "::notice::Chưa cấu hình SONAR_TOKEN — bỏ qua phân tích."
+            exit 0
+          fi
+          mvn -B -ntp -DskipTests verify "${SONAR_PLUGIN}:sonar"
+
+  # ── 5. Cổng duy nhất cho branch protection ──────────────────────────────────
+  # 🔴 Đặt required check là các job `Build <service>` sẽ làm PR TREO VĨNH VIỄN:
+  # PR chỉ sửa frontend thì 8 job kia không chạy ⇒ không bao giờ báo cáo ⇒ GitHub
+  # kẹt ở "Expected — waiting for status", không đỏ không xanh, không merge được.
+  # Job này luôn chạy nên luôn báo cáo. Chọn ĐÚNG NÓ ở Settings → Branches.
+  ci_gate:
+    name: ci-gate
+    needs: [changes, build, validate_others]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Tổng hợp kết quả
+        run: |
+          set -uo pipefail
+          fail=0
+          for entry in \
+            "changes=${{ needs.changes.result }}" \
+            "build=${{ needs.build.result }}" \
+            "validate_others=${{ needs.validate_others.result }}"; do
+            name=${entry%%=*}; result=${entry#*=}
+            case "$result" in
+              success|skipped) echo "✅ $name: $result" ;;
+              *)               echo "❌ $name: $result"; fail=1 ;;
+            esac
+          done
+          exit "$fail"
+
+  # ── 6. Đóng vòng CI → GitOps ────────────────────────────────────────────────
+  # Bước dễ hỏng IM LẶNG nhất cả pipeline: ghi sai tên file thì job vẫn xanh,
+  # commit vẫn vào repo gitops, mà ArgoCD không đọc → không deploy gì và không
+  # có lỗi ở đâu cả.
+  bump:
+    name: Bump tag staging (repo gitops)
+    needs: [changes, build, ci_gate]
+    if: >
+      github.event_name == 'push' &&
+      needs.changes.outputs.services != '[]' &&
+      needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repo gitops
+        uses: actions/checkout@v4
+        with:
+          repository: phucgigital03/BadmintonHub-GitOps
+          ssh-key: ${{ secrets.GITOPS_DEPLOY_KEY }}
+          # Cần lịch sử đầy đủ để rebase nếu có PR promote merge cùng lúc.
+          fetch-depth: 0
+
+      # Ghim version: helm chỉ dùng để `helm template` kiểm chart render được,
+      # nhưng "latest" nghĩa là hành vi có thể đổi giữa hai lần chạy CI.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+          token: ${{ github.token }}
+
+      - name: Sửa image.tag + kiểm chart còn render được
+        id: edit
+        run: |
+          set -euo pipefail
+          SHA="${GITHUB_SHA:0:7}"
+          changed=()
+
+          for svc in $(jq -r '.[]' <<<'${{ needs.changes.outputs.services }}'); do
+            f="values/${svc}-staging.yaml"
+
+            # Hợp đồng với ArgoCD (ApplicationSet Day 6 đọc đúng đường dẫn này).
+            if [ ! -f "$f" ]; then
+              echo "::error::$f không tồn tại — hợp đồng CI↔ArgoCD đã lệch."
+              exit 1
+            fi
+
+            # Neo '^  tag: ' (đúng 2 space) để không đụng dòng comment
+            # '# tag = git SHA ...' phía trên. Kỳ vọng đúng 1 khớp mỗi file.
+            n=$(grep -c '^  tag: ' "$f" || true)
+            if [ "$n" -ne 1 ]; then
+              echo "::error::$f có $n dòng '  tag:' (kỳ vọng đúng 1) — dừng để khỏi sửa nhầm."
+              exit 1
+            fi
+
+            # sed chứ KHÔNG yq: yq viết lại cả file, xoá sạch comment và thêm
+            # dấu nháy quanh giá trị → lệch định dạng với 26 file còn lại.
+            sed -i "s|^  tag: .*|  tag: ${SHA}|" "$f"
+
+            # Chart khai `required` trên image.tag, nên sed làm rỗng tag sẽ chết
+            # ở đây — trước khi commit, chứ không phải lúc ArgoCD sync.
+            helm template ci charts/service -f "$f" >/dev/null
+
+            numstat=$(git diff --numstat -- "$f" || true)
+            if [ -n "$numstat" ]; then
+              add=$(awk '{print $1}' <<<"$numstat")
+              del=$(awk '{print $2}' <<<"$numstat")
+              if [ "$add" != "1" ] || [ "$del" != "1" ]; then
+                echo "::error::$f đổi +$add/-$del dòng (kỳ vọng +1/-1) — sed đã sửa nhầm."
+                exit 1
+              fi
+              changed+=("$svc")
+            fi
+          done
+
+          if [ ${#changed[@]} -eq 0 ]; then
+            echo "Tag không đổi — không commit (tránh commit rỗng)."
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "list=${changed[*]}" >> "$GITHUB_OUTPUT"
+            echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit + push
+        if: steps.edit.outputs.committed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name  "badminton-ci[bot]"
+          git config user.email "badminton-ci@users.noreply.github.com"
+          git add values/
+          # KHÔNG thêm trailer Co-Authored-By (quy ước của cả 2 repo).
+          git commit -m "feat(values): bump ${{ steps.edit.outputs.list }} staging -> ${{ steps.edit.outputs.sha }}"
+
+          # Promote PR có thể merge đúng lúc này → rebase rồi thử lại.
+          for i in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "push bị từ chối (lần $i) — rebase rồi thử lại"
+            git pull --rebase
+            sleep 5
+          done
+          echo "::error::không push được vào repo gitops sau 3 lần thử"
+          exit 1
+
+  # ── 7. Thông báo Telegram ───────────────────────────────────────────────────
+  notify:
+    name: Thông báo Telegram
+    needs: [changes, build, bump]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Gửi tin
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          BUMP_RESULT: ${{ needs.bump.result }}
+          SERVICES: ${{ needs.changes.outputs.services }}
+        run: |
+          set -uo pipefail
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
+            echo "::notice::Chưa cấu hình TELEGRAM_* — bỏ qua thông báo."
+            exit 0
+          fi
+          if [ "$BUILD_RESULT" = "success" ]; then icon="✅"; else icon="❌"; fi
+          # printf chứ không phải chuỗi nhiều dòng: dòng nối tiếp của chuỗi phải
+          # nằm ở cột 0, mà cột 0 cắt ngang block scalar `run: |` của YAML.
+          text=$(printf '%s BadmintonHub CI — %s\ncommit : %s\nservice: %s\nbump   : %s\nrun    : %s' \
+            "$icon" "$BUILD_RESULT" "${GITHUB_SHA:0:7}" "$SERVICES" "$BUMP_RESULT" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
+          # --data-urlencode để khỏi phải escape tay; không dùng parse_mode nên
+          # ký tự đặc biệt trong tên nhánh/commit không làm hỏng tin nhắn.
+          curl -sS -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT}" \
+            --data-urlencode "text=${text}" \
+            --data-urlencode "disable_web_page_preview=true" >/dev/null

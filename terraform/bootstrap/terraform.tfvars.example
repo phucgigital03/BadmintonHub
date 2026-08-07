@@ -13,4 +13,12 @@
 # state_bucket_name = "badminton-tfstate-apse1"
 # lock_table_name   = "badminton-tflock"
 
-# ecr_keep_last_images = 10
+# Số image giữ lại mỗi ECR repo. Từ Day 5 mỗi merge vào main đẩy thêm 1 image,
+# nên đừng hạ quá thấp: lifecycle xoá cả image mà values/<svc>-prod.yaml đang trỏ tới.
+# ecr_keep_last_images = 20
+
+# ── GitHub Actions OIDC (Day 5) ───────────────────────────────────────────────
+# Chỉ cần khai khi bạn fork/đổi tên repo. Phân biệt HOA/thường — phải khớp
+# chính xác đoạn <owner>/<repo> trong `git remote -v` của repo APP.
+# github_owner = "phucgigital03"
+# github_repo  = "BadmintonHub"

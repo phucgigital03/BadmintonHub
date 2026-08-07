@@ -1,0 +1,204 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Pipeline hạ tầng — Day 5
+#
+# Vòng đời của hạ tầng khác hẳn vòng đời của code, nên nó có workflow riêng:
+#   • PR đổi terraform/**  → `plan`, dán kết quả vào PR. Chỉ ĐỌC.
+#   • workflow_dispatch    → `apply` / `destroy`. Bấm tay, có bước gõ xác nhận.
+#
+# 🔴 CỐ Ý KHÔNG auto-apply khi merge vào main. Mô hình của dự án là dựng cụm rồi
+#    destroy trong ngày; một `apply` tự động có thể dựng cụm lúc bạn không ngồi
+#    máy và đồng hồ tiền chạy suốt đêm (~$0.22/giờ).
+#
+# 🔴 CỐ Ý KHÔNG có job drift-detection theo cron. Cụm không tồn tại 29/30 ngày
+#    trong tháng, nên drift sẽ báo "thiếu 76 resource" mỗi lần chạy — nhiễu tới
+#    mức bạn sẽ tắt nó đi.
+#
+# Stack `terraform/bootstrap` KHÔNG nằm trong pipeline này: nó apply đúng một
+# lần, có `prevent_destroy`, và một lệnh destroy nhầm ở đó là mất state của cả
+# dự án. Bootstrap luôn chạy tay.
+# ══════════════════════════════════════════════════════════════════════════════
+name: Terraform
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Hành động"
+        type: choice
+        options: [apply, destroy]
+        required: true
+      confirm:
+        description: "Gõ lại đúng chữ apply hoặc destroy để xác nhận"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-1
+  # Ghim đúng version đang dùng ở máy dev. Để trống = "bản mới nhất" ⇒ cùng một
+  # commit có thể cho plan khác nhau ở hai thời điểm mà không ai sửa dòng nào.
+  TF_VERSION: "1.15.8"
+
+jobs:
+  # ── plan trên Pull Request ──────────────────────────────────────────────────
+  plan:
+    name: terraform plan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      # Role RIÊNG, chỉ có ReadOnlyAccess. Run trên PR không bao giờ cầm quyền
+      # ghi — kể cả khi ai đó sửa file workflow trong chính PR đó.
+      - name: Lấy credential AWS (OIDC, read-only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TF_PLAN_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          # Tắt wrapper để bắt đúng stdout thô đem dán vào PR.
+          terraform_wrapper: false
+
+      - name: fmt (cả 2 stack)
+        working-directory: .
+        run: terraform fmt -check -recursive terraform
+
+      - name: init
+        run: terraform init -input=false
+
+      - name: validate
+        run: terraform validate -no-color
+
+      - name: plan
+        id: plan
+        # -lock=false BẮT BUỘC: khoá state là thao tác GHI vào DynamoDB, mà role
+        # này chỉ đọc. Không có cờ này thì plan chết với AccessDeniedException.
+        # || true để vẫn dán được lỗi vào PR; exit code xử lý ở bước cuối.
+        run: |
+          set -o pipefail
+          terraform plan -no-color -input=false -lock=false 2>&1 | tee plan.txt
+          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Dán kết quả vào PR
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const fs = require('fs');
+            let out = '';
+            try { out = fs.readFileSync('terraform/plan.txt', 'utf8'); }
+            catch { out = '(không đọc được plan.txt)'; }
+            // Giới hạn comment của GitHub là 65536 ký tự.
+            const MAX = 60000;
+            const body = [
+              '### `terraform plan` — stack ephemeral',
+              '',
+              out.length > MAX
+                ? '> ⚠️ Output bị cắt bớt, xem đầy đủ trong log của workflow.\n'
+                : '',
+              '```terraform',
+              out.length > MAX ? out.slice(-MAX) : out,
+              '```',
+              '',
+              '_Chạy với role read-only và `-lock=false`. `apply` phải bấm tay ở tab Actions._',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Báo đỏ nếu plan lỗi
+        if: steps.plan.outputs.exit != '0'
+        run: |
+          echo "::error::terraform plan thất bại (exit ${{ steps.plan.outputs.exit }}) — xem comment trong PR."
+          exit 1
+
+  # ── apply / destroy — bấm tay ───────────────────────────────────────────────
+  dispatch:
+    name: terraform ${{ inputs.action }}
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - name: Kiểm chuỗi xác nhận
+        working-directory: .
+        run: |
+          if [ "${{ inputs.confirm }}" != "${{ inputs.action }}" ]; then
+            echo "::error::Ô xác nhận phải gõ đúng chữ '${{ inputs.action }}'."
+            exit 1
+          fi
+
+      - name: Cảnh báo trước khi chạy
+        working-directory: .
+        run: |
+          if [ "${{ inputs.action }}" = "apply" ]; then
+            echo "::warning::⏱ ĐỒNG HỒ TIỀN BẮT ĐẦU — cụm sống ≈ \$0.22/giờ. Hẹn giờ destroy NGAY BÂY GIỜ."
+            echo "Dựng mất ~22 phút (control plane ~13 phút là lâu nhất)."
+          else
+            echo "::warning::🔴 Job này CHỈ chạy 'terraform destroy'."
+            echo "ALB và EBS volume do *controller* tạo KHÔNG nằm trong tf state ⇒ destroy không biết chúng tồn tại."
+            echo "Từ Day 6 (có ArgoCD + PVC + Ingress) phải chạy ĐỦ 5 bước teardown §9.2 TRƯỚC khi bấm nút này,"
+            echo "trong đó 'helm uninstall infra' phải chạy TRƯỚC khi xoá PVC (kubectl delete pvc treo vô hạn"
+            echo "khi pod còn mount, mà vẫn in \"deleted\" ⇒ Ctrl-C rồi destroy = EBS mồ côi vẫn tính tiền)."
+            echo "Việc để nút này tự lo đủ 5 bước thuộc phạm vi Day 7."
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Lấy credential AWS (OIDC, quyền ghi)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TF_APPLY_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # Dựng ~22 phút, xoá ~13 phút. Xin 2 giờ để credential không hết hạn
+          # giữa chừng — hết hạn giữa apply là state ghi dở, rất khó dọn.
+          role-duration-seconds: 7200
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: init
+        run: terraform init -input=false
+
+      - name: ${{ inputs.action }}
+        run: terraform ${{ inputs.action }} -auto-approve -input=false -lock-timeout=5m
+
+      - name: Nhắc việc sau khi chạy
+        if: always()
+        working-directory: .
+        run: |
+          if [ "${{ inputs.action }}" = "apply" ]; then
+            echo "::warning::Cụm đang sống và đang tính tiền. Nhớ chạy lại workflow này với action=destroy TRONG NGÀY."
+          else
+            echo "::notice::Nghiệm thu bill về 0: EKS · EC2 · EBS (status=available) · NAT · Elastic IP · Load Balancer · VPC non-default · OIDC provider đều phải rỗng."
+            echo "::notice::Phải CÒN: S3 state · DynamoDB badminton-tflock · 9 ECR · 3 IAM role badminton-gha-* (chúng thuộc stack bootstrap)."
+          fi

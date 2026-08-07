@@ -43,8 +43,31 @@ variable "ecr_repositories" {
   ]
 }
 
+# 🔴 Từ Day 5, MỖI LẦN merge vào main là CI đẩy thêm một image ⇒ trần này bị
+# chạm thường xuyên hơn hẳn thời còn build tay. Lifecycle dùng tagStatus="any"
+# nên nó xoá cả image mà values/<svc>-prod.yaml đang trỏ tới — prod sẽ
+# ImagePullBackOff ở lần pod restart kế tiếp, và log không nói gì về ECR.
+# 20 cho ~2x biên an toàn. Chi phí ECR ≈ $0.10/GB-tháng: giữ 10 ≈ $1.1/tháng,
+# giữ 20 ≈ $2.0/tháng, giữ 30 ≈ $2.9/tháng.
 variable "ecr_keep_last_images" {
-  description = "Số image gần nhất giữ lại mỗi repo (lifecycle policy). Hạ xuống 5 nếu muốn tiết kiệm dung lượng."
+  description = "Số image gần nhất giữ lại mỗi repo (lifecycle policy). Hạ xuống 10 nếu muốn tiết kiệm dung lượng."
   type        = number
-  default     = 10
+  default     = 20
+}
+
+# ── GitHub Actions OIDC (Day 5) ───────────────────────────────────────────────
+# Hai chuỗi này đi thẳng vào điều kiện `sub` của trust policy trong
+# github-oidc.tf. Sai chữ hoa/thường ⇒ CI báo
+# "Not authorized to perform sts:AssumeRoleWithWebIdentity" mà không nói vì sao.
+# Kiểm bằng `git remote -v`: phải khớp CHÍNH XÁC đoạn <owner>/<repo> trong URL.
+variable "github_owner" {
+  description = "Chủ sở hữu repo trên GitHub (user hoặc org)."
+  type        = string
+  default     = "phucgigital03"
+}
+
+variable "github_repo" {
+  description = "Tên repo APP chứa .github/workflows (không phải repo gitops). Phân biệt hoa/thường."
+  type        = string
+  default     = "BadmintonHub"
 }

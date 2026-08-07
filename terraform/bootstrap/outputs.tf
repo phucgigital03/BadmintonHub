@@ -23,3 +23,22 @@ output "ecr_login_command" {
   description = "Lệnh đăng nhập Docker vào ECR (Day 4/5)."
   value       = "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com"
 }
+
+# ── Day 5: 3 ARN dưới đây dán vào GitHub → Settings → Secrets and variables →
+#    Actions. Dùng Secrets (không phải Variables) vì ARN chứa account ID, mà
+#    repo này public. Xem lại bất cứ lúc nào bằng `terraform output` ở thư mục
+#    terraform/bootstrap.
+output "gha_ecr_role_arn" {
+  description = "→ secret AWS_ROLE_ECR_ARN. Job release của ci.yml assume role này để push ECR."
+  value       = aws_iam_role.gha_ecr.arn
+}
+
+output "gha_tf_plan_role_arn" {
+  description = "→ secret AWS_ROLE_TF_PLAN_ARN. Job plan của terraform.yml (chạy trên PR, chỉ đọc)."
+  value       = aws_iam_role.gha_tf_plan.arn
+}
+
+output "gha_tf_apply_role_arn" {
+  description = "→ secret AWS_ROLE_TF_APPLY_ARN. Job apply/destroy của terraform.yml (bấm tay)."
+  value       = aws_iam_role.gha_tf_apply.arn
+}
