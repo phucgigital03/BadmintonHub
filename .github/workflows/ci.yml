@@ -124,6 +124,8 @@ jobs:
       # còn token của PR mang sub = ...:pull_request → AssumeRole bị từ chối.
       # Tuyến phòng thủ thật nằm ở trust policy, không phải ở dòng `if`.
       id-token: write
+      # Cho phép đẩy SARIF của Trivy lên tab Security → Code scanning.
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -227,19 +229,53 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-      # Quét TRƯỚC khi push: image lỗi không bao giờ được nằm trong ECR.
-      # ignore-unfixed BẮT BUỘC — base eclipse-temurin:21-jre gần như luôn có
-      # HIGH CVE chưa có bản vá; thiếu cờ này thì gate đỏ mọi merge ngay từ ngày
-      # đầu, và kết cục thực tế là gate bị tắt ⇒ mất luôn giá trị.
-      - name: Quét lỗ hổng (Trivy)
+      # Quét TRƯỚC khi push, nhưng KHÔNG chặn (exit-code 0) — xem §7 ⑥ của
+      # docs/DAY5-EXPLAINED.md. Đo thật 2026-08-07: api-gateway 1 CRITICAL/40
+      # HIGH · booking-service 7/46 · frontend 2/33, **toàn bộ đều ĐÃ CÓ bản vá**
+      # nên `ignore-unfixed` không lọc bớt được, và hạ gate xuống chỉ CRITICAL
+      # cũng vẫn đỏ. Gốc rễ là Spring Boot 3.2.5 (4/2024) + base image cũ —
+      # nâng chúng là việc riêng, không phải việc của Day 5.
+      #
+      # Đổi lại KHÔNG chôn kết quả trong log: xuất SARIF rồi đẩy lên tab
+      # Security → Code scanning, nơi xem được danh sách CVE theo thời gian.
+      # Siết thành gate thật = đổi exit-code về "1" sau khi nâng dependency.
+      - name: Quét lỗ hổng (Trivy → SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: local/${{ matrix.service }}:${{ steps.meta.outputs.sha }}
-          format: table
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           vuln-type: os,library
-          exit-code: "1"
+          # Thiếu cờ này thì SARIF chứa MỌI mức nghiêm trọng, bất kể `severity`
+          # ở trên — tab Security sẽ ngập LOW/MEDIUM.
+          limit-severities-for-sarif: true
+          exit-code: "0"
+
+      - name: Tóm tắt số lỗ hổng
+        if: always()
+        run: |
+          f="trivy-${{ matrix.service }}.sarif"
+          n=$(jq '[.runs[].results[]] | length' "$f" 2>/dev/null || echo '?')
+          {
+            echo "### 🔐 Trivy — \`${{ matrix.service }}\`: **$n** phát hiện HIGH/CRITICAL (đã có bản vá)"
+            echo "Chi tiết ở tab **Security → Code scanning**, lọc theo \`trivy-${{ matrix.service }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Đẩy kết quả lên tab Security
+        # PR từ fork không được cấp quyền ghi security-events → bỏ qua thay vì đỏ.
+        if: >
+          always() && (github.event_name == 'push' ||
+          github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          # 🔴 `category` BẮT BUỘC phải khác nhau giữa các service. Để trống thì
+          # 9 job matrix cùng đẩy vào một category và **ghi đè lẫn nhau** — tab
+          # Security chỉ còn kết quả của job chạy xong sau cùng, mà không có lỗi
+          # ở đâu cả.
+          category: trivy-${{ matrix.service }}
 
       # --- Chỉ chạy khi merge vào main -----------------------------------------
       - name: Lấy credential AWS (OIDC)

@@ -305,7 +305,7 @@ một PR chỉ sửa `frontend/` sẽ khiến 8 job kia **không bao giờ báo 
 
 ---
 
-## 6. Ba lệch có chủ đích so với `planning/Planning_CICD.md` §Day 5
+## 6. Bốn lệch có chủ đích so với `planning/Planning_CICD.md` §Day 5
 
 **⓪ `npm run lint` chạy nhưng KHÔNG chặn merge.** Đo được 2026-08-07: **12 lỗi có sẵn** ở 7 file frontend
 (11 × `react-hooks/purity` — gọi `Date.now()` trong thân component — và 1 × `rules-of-hooks`). Bật gate ngay
@@ -343,9 +343,31 @@ diff **đúng 1 dòng**, không hơn.
 **③ Bump ở MỘT job sau matrix, không phải trong từng job matrix.** Ba service đổi cùng lúc = ba `git push`
 đồng thời vào cùng một repo ⇒ non-fast-forward ⇒ job đỏ ngẫu nhiên. Một job, một commit, gom hết.
 
-**④ Trivy quét TRƯỚC khi push.** Image lỗi không bao giờ được nằm trong ECR. Và `ignore-unfixed: true` là
-bắt buộc — base `eclipse-temurin:21-jre` gần như luôn có HIGH CVE **chưa có bản vá**; gate chỉ nên đỏ vì
-thứ bạn **hành động được**.
+**④ Trivy quét TRƯỚC khi push, nhưng KHÔNG chặn — và kết quả đi lên tab Security chứ không chôn trong log.**
+
+Kế hoạch ban đầu định gate `HIGH,CRITICAL` + `ignore-unfixed: true`, với lập luận "gate chỉ nên đỏ vì thứ
+bạn hành động được". Lần chạy CI đầu tiên (2026-08-07) chứng minh lập luận đó **không đủ**: cả 9 job đều đỏ,
+và `ignore-unfixed` không lọc bớt được gì vì **mọi CVE tìm thấy đều ĐÃ CÓ bản vá**.
+
+Số đo thật:
+
+| Image | CRITICAL | HIGH | Nguồn |
+|---|---:|---:|---|
+| `api-gateway` | 1 | 40 | 36 từ **Java** (cây phụ thuộc Spring Boot 3.2.5) + 5 từ `pebble` trong base |
+| `booking-service` | 7 | 46 | 48 từ **Java** |
+| `frontend` | 2 | 33 | 35 từ **alpine 3.21.3** trong `nginx:1.27-alpine` |
+
+Hạ gate xuống chỉ `CRITICAL` **cũng không cứu được** (vẫn 1 / 2 / 7). Gốc rễ là **Spring Boot 3.2.5 phát
+hành 4/2024** — `spring-core`, `spring-security-crypto`, `spring-webflux`, `spring-cloud-gateway` đều có CVE
+đã vá ở version mới hơn. Nâng chúng là một việc riêng, có rủi ro vỡ test, không thuộc Day 5.
+
+⇒ `exit-code: "0"` + xuất **SARIF** đẩy lên **Security → Code scanning**. Vẫn thấy đủ danh sách CVE và theo
+dõi được theo thời gian, mà không dựng một cổng sẽ bị tắt trong hai tuần. Siết thành gate thật = đổi
+`exit-code` về `"1"` sau khi nâng dependency.
+
+🔴 Hai chi tiết dễ hỏng im lặng ở bước này: **`limit-severities-for-sarif: true`** (thiếu thì SARIF chứa mọi
+mức, tab Security ngập LOW/MEDIUM) và **`category: trivy-<service>`** (để trống thì 9 job matrix cùng đẩy vào
+một category và **ghi đè lẫn nhau** — tab Security chỉ còn kết quả của job xong sau cùng, không lỗi ở đâu cả).
 
 **⑤ `description` của `aws_iam_role` phải là ASCII thuần — nhưng của `aws_iam_policy` thì không.**
 `iam:CreateRole` chỉ nhận U+0020..U+007E và U+00A1..U+00FF, nên chữ có dấu tiếng Việt (`đ` U+0111,
