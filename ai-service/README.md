@@ -1,7 +1,7 @@
 # ai-service (Python)
 
 Conversational **booking concierge** for BadmintonHub — FastAPI · LangGraph · LLM provider-agnostic
-(chat default = **Ollama** local `qwen2.5:3b`) · MCP. RAG embeddings still use Gemini.
+(chat default = **Gemini `gemini-3.6-flash`**, free tier) · MCP. RAG embeddings use Gemini too.
 Second capability of `ai-service` alongside the document-reconciliation feature. Port **3010**, registers with
 Eureka as `ai-service` so the existing gateway route `lb://ai-service` (`/api/ai/**`) keeps working.
 
@@ -25,9 +25,12 @@ Foundation + the 7 booking tools as a **FastMCP** server. No LLM/agent/graph yet
 - Only [`uv`](https://docs.astral.sh/uv/). **No system Python needed** — this project is pinned to a
   uv-managed Python 3.12 (`[tool.uv] python-preference = "only-managed"`), so `uv sync` downloads and
   uses its own interpreter, independent of any Python on the machine.
-- Repo-root `.env` with `JWT_SECRET`, `AI_DB_URL`, `GATEWAY_URL`, `EUREKA_URL`, `LLM_PROVIDER=ollama` +
-  `OLLAMA_BASE_URL`/`OLLAMA_MODEL` (chat), and `GEMINI_API_KEY` (**RAG embeddings only**) — see `../.env.example`.
-- [Ollama](https://ollama.com) running locally for the chat model: `ollama pull qwen2.5:3b` (one-time).
+- Repo-root `.env` with `JWT_SECRET`, `AI_DB_URL`, `GATEWAY_URL`, `EUREKA_URL`, `LLM_PROVIDER=gemini`,
+  `GEMINI_API_KEY` (**chat + RAG embeddings**) and `GEMINI_THINKING_LEVEL=low` — see `../.env.example`.
+  <sub>`thinking_level` is pinned on purpose: Gemini 3+ defaults it to `high`, which costs latency
+  against the 25s cap and free-tier thinking tokens for two tasks that don't need deep reasoning.</sub>
+- Self-host alternative (no external API, PII stays local): set `LLM_PROVIDER=ollama` and run
+  [Ollama](https://ollama.com) with `ollama pull qwen2.5:3b` — chat only, embeddings still Gemini.
 - `docker compose up -d postgres-ai` (ai_db, host port 5440).
 
 ## Commands

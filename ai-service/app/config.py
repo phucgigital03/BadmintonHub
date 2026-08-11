@@ -21,10 +21,17 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # --- LLM (provider-agnostic; default Gemini 2.5 Flash) ---
+    # --- LLM (provider-agnostic; default Gemini 3.6 Flash — see assistant/llm.py) ---
     llm_provider: str = "gemini"
     gemini_api_key: str = "FILL_IN"
     openai_api_key: str = "FILL_IN"
+
+    # Gemini 3+ "thinking": minimal | low | medium | high. The SDK default when unset is
+    # **high** — max reasoning depth on every call. Neither call site needs that (`perceive`
+    # extracts fields from one sentence, `agent` plans READ tool calls), and it costs latency
+    # against llm_timeout_seconds plus thinking tokens against the free-tier quota. Raise it
+    # only if slot-filling quality measurably drops — and re-measure with scripts/probe_llm.py.
+    gemini_thinking_level: str = "low"
 
     # --- Ollama (local self-host · qwen2.5:3b; PII never leaves the machine) ---
     # LLM_PROVIDER=ollama routes get_chat_model() here. keep_alive/num_ctx set in llm.py.

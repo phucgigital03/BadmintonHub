@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from langsmith import traceable
+
 from app.assistant.models import BookingIntent, ProposedBooking
 from app.tools.schemas import AvailableSlot, BookingResponse
 
@@ -21,6 +23,7 @@ class GuardrailFailure:
     message: str  # Vietnamese, shown to the user as-is
 
 
+@traceable(name="guardrail.check_email_verified", run_type="chain")
 def check_email_verified(claims: dict) -> GuardrailFailure | None:
     if bool(claims.get("email_verified", False)):
         return None
@@ -31,6 +34,7 @@ def check_email_verified(claims: dict) -> GuardrailFailure | None:
     )
 
 
+@traceable(name="guardrail.check_contact", run_type="chain")
 def check_contact(proposal: ProposedBooking) -> GuardrailFailure | None:
     if proposal.customer_name and proposal.customer_phone:
         return None
@@ -41,6 +45,7 @@ def check_contact(proposal: ProposedBooking) -> GuardrailFailure | None:
     )
 
 
+@traceable(name="guardrail.check_budget", run_type="chain")
 def check_budget(proposal: ProposedBooking, intent: BookingIntent) -> GuardrailFailure | None:
     if intent.budget_max is None or proposal.total_price <= intent.budget_max:
         return None
@@ -52,6 +57,7 @@ def check_budget(proposal: ProposedBooking, intent: BookingIntent) -> GuardrailF
     )
 
 
+@traceable(name="guardrail.check_slots_still_available", run_type="chain")
 def check_slots_still_available(
     proposal: ProposedBooking, fresh_grid: list[AvailableSlot]
 ) -> GuardrailFailure | None:
@@ -66,6 +72,7 @@ def check_slots_still_available(
     )
 
 
+@traceable(name="guardrail.find_reusable_pending", run_type="chain")
 def find_reusable_pending(
     proposal: ProposedBooking, bookings: list[BookingResponse]
 ) -> BookingResponse | None:

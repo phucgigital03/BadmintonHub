@@ -19,11 +19,13 @@ kiểm chứng ở đâu**.
   PENDING 10'** rồi mở **PaymentScreen QR** (đường tiền cũ đã hardening: QR → upload proof → STAFF confirm).
   Guardrail (budget / re-check slot / EMAIL_VERIFIED / contact) là **CODE tất định**, không phải LLM. KHÔNG có
   code path nào gọi payment `/confirm`.
-- **Chat model = Ollama local `qwen2.5:3b`** (provider-agnostic qua `LLM_PROVIDER=ollama`; chạy trên máy qua
-  `http://localhost:11434`, KHÔNG gọi API ngoài → PII hội thoại không rời máy). Model được snapshot vào
-  `agent_run_log`. Đổi lại Gemini/OpenAI chỉ qua `.env`, không sửa code.
-- **⚠️ RAG (UC-CS-08) vẫn embed bằng Gemini** `gemini-embedding-001` @768 → **`GEMINI_API_KEY` vẫn CẦN, nhưng
-  CHỈ cho phần hỏi-đáp RAG**, KHÔNG cho chat. (Việc đổi Ollama là **chat-only**; embeddings chưa localize.)
+- **Chat model = Gemini `gemini-3.6-flash`** (provider-agnostic qua `LLM_PROVIDER=gemini`). Model được snapshot
+  vào `agent_run_log`. Đổi sang Ollama local/OpenAI chỉ qua `.env`, không sửa code.
+  🔴 **`GEMINI_THINKING_LEVEL=low` phải có**: Gemini 3+ mặc định `high` (suy luận sâu tối đa) → chậm hơn và đốt
+  thinking token vô ích cho việc trích xuất field. Đo trên máy: `low` 3.6s vs `high` 5.9s, kết quả y hệt.
+- **RAG (UC-CS-08) cũng dùng Gemini** `gemini-embedding-001` @768 ⇒ **`GEMINI_API_KEY` giờ phục vụ CẢ chat lẫn RAG**.
+- **⚠️ Free tier = Google CÓ THỂ dùng nội dung để cải thiện sản phẩm** ⇒ chỉ demo/thesis, **KHÔNG PII người thật**.
+  Muốn no-train: key **billing**, hoặc `LLM_PROVIDER=ollama` (chat chạy trên máy, PII không rời máy).
 
 ---
 
@@ -46,10 +48,11 @@ docker compose ps postgres-ai redis
 File `.env` ở **gốc repo** (gitignored — copy từ `.env.example` nếu chưa có). Đảm bảo có:
 ```dotenv
 JWT_SECRET=<chạy: openssl rand -hex 64>              # BẮT BUỘC — ai-service fail-fast nếu thiếu; PHẢI khớp user-service
-LLM_PROVIDER=ollama                                   # chat chạy Ollama local (provider-agnostic; đổi lại gemini/openai qua đây)
-OLLAMA_BASE_URL=http://localhost:11434                # Ollama daemon trên máy
-OLLAMA_MODEL=qwen2.5:3b                               # model chat local (nhẹ cho Mac Air M1 8GB)
-GEMINI_API_KEY=<key từ https://aistudio.google.com/apikey>   # ⚠️ CHỈ cho RAG embeddings (UC-CS-08) — KHÔNG cho chat
+LLM_PROVIDER=gemini                                   # chat = gemini-3.6-flash (provider-agnostic; đổi ollama/openai qua đây)
+GEMINI_API_KEY=<key từ https://aistudio.google.com/apikey>   # dùng cho CẢ chat lẫn RAG embeddings
+GEMINI_THINKING_LEVEL=low                             # 🔴 BẮT BUỘC — Gemini 3+ mặc định "high": chậm + đốt token vô ích
+OLLAMA_BASE_URL=http://localhost:11434                # chỉ dùng khi LLM_PROVIDER=ollama
+OLLAMA_MODEL=qwen2.5:3b                               # chỉ dùng khi LLM_PROVIDER=ollama
 AI_DB_URL=postgresql+asyncpg://postgres:postgres@localhost:5440/ai_db  # ai_db (postgres-ai :5440)
 GATEWAY_URL=http://localhost:3000                     # ai-service gọi court/booking/payment QUA gateway
 FRONTEND_URL=http://localhost:5173                    # = origin CORS + email verify link
@@ -58,9 +61,10 @@ OTEL_ENABLED=false                                    # tắt tracing Zipkin (de
 > ℹ️ Nếu để `OTEL_ENABLED=true` (mặc định) mà **chưa** chạy Zipkin (:9411): từ bản vá này ai-service tự **probe**
 > Zipkin lúc khởi động, không tới thì bỏ qua tracing im lặng (log 1 dòng `observability.zipkin_unreachable`) —
 > KHÔNG còn spam traceback. Muốn có trace thật: `docker compose up -d zipkin` rồi restart ai-service.
-> ⚠️ **PII posture**: chat chạy **Ollama local** nên nội dung hội thoại (SĐT/ý định đặt sân) **không rời máy**. Đường
-> PII dư duy nhất còn lại = **câu hỏi RAG được embed qua Gemini** (`GEMINI_API_KEY`). Muốn tuyệt đối no-train thì
-> localize luôn embeddings (việc sau). Demo/thesis dùng dữ liệu của bạn/synthetic, **KHÔNG commit key thật**.
+> ⚠️ **PII posture**: chat chạy **Gemini free tier** ⇒ nội dung hội thoại (SĐT/ý định đặt sân) **đi ra Google**, và
+> free tier thì Google **có thể dùng để cải thiện sản phẩm**. Câu hỏi RAG cũng embed qua Gemini. ⇒ Demo/thesis
+> dùng dữ liệu của bạn/synthetic, **KHÔNG PII người thật, KHÔNG public, KHÔNG commit key thật**. Muốn no-train:
+> key **billing**, hoặc `LLM_PROVIDER=ollama` (chat không rời máy) + localize embeddings (việc sau).
 
 ### A3. Chạy service Java (mỗi cái 1 terminal, **từ gốc repo**, đúng thứ tự)
 ```bash
@@ -77,18 +81,21 @@ mvn -pl payment-service spring-boot:run     # 3006  (initiate → QR + orderCode
 - (Tùy chọn) `mvn -pl chat-service spring-boot:run` — **3011** — chỉ cần cho **UC-CS-07** (escalate mở chat STAFF);
   cần thêm `docker compose up -d mongodb-chat rabbitmq`.
 
-### A4. Ollama — chat model local (BẮT BUỘC lên **trước** ai-service)
+### A4. Chat model — kiểm TRƯỚC khi bật ai-service
+`LLM_PROVIDER=gemini` gọi thẳng API, **không có daemon nào phải bật**. Chỉ cần `GEMINI_API_KEY` trong `.env`.
+Kiểm bằng probe — nó in ra **đúng prompt node `perceive` gửi** rồi gọi thật, **không** bọc `asyncio.wait_for` 25s
+nên thấy được lỗi/latency thật thay vì một `TimeoutError` trống rỗng:
 ```bash
-# Cài Ollama (macOS): tải app tại https://ollama.com  (hoặc: brew install ollama)
-ollama serve &                              # daemon nghe :11434 (app Ollama tự chạy nền thì bỏ dòng này)
-ollama pull qwen2.5:3b                       # kéo model chat (~2GB) — 1 lần
-ollama list                                  # phải thấy dòng qwen2.5:3b
-curl http://localhost:11434/api/tags         # → JSON có "qwen2.5:3b" = daemon UP
+cd ai-service
+uv run python scripts/probe_llm.py "tối thứ 6 pickleball 18-20h dưới 200k"
+# ĐÚNG  → OK in ~3-4s + BookingIntent(date=<thứ 6 tới>, 18:00, 20:00, PICKLEBALL, budget_max=200000)
+# 429 / ResourceExhausted → hết quota free tier (15 RPM / ~1500 RPD) — chờ hoặc bật billing
+# PermissionDenied / "API key not valid" → GEMINI_API_KEY sai
 ```
-- ⚠️ **Ollama phải UP + đã `pull qwen2.5:3b` TRƯỚC khi bật ai-service** — nếu không, node `perceive`/`agent` gọi
-  LLM sẽ lỗi → agent degrade (fallback deterministic, không đề xuất "thông minh").
-- 🐢 **Mac Air M1 8GB**: câu trả lời **ĐẦU TIÊN** phải nạp model vào RAM nên chậm vài giây; các lượt sau nhanh hơn
-  (config `keep_alive="30m"` giữ model ấm 30'). Đừng tưởng treo — chờ lượt đầu.
+- 🐢 Chậm bất thường (>10s)? Kiểm `GEMINI_THINKING_LEVEL` — bỏ trống là Gemini 3+ chạy `high`.
+- <sub>Chỉ khi đổi về `LLM_PROVIDER=ollama`: cài https://ollama.com → `ollama serve &` → `ollama pull qwen2.5:3b`
+  (~2GB, 1 lần) → `curl http://localhost:11434/api/tags` phải thấy model. Trên Mac Air M1 8GB lượt **đầu tiên**
+  chậm vài giây vì nạp model vào RAM (`keep_alive="30m"` giữ ấm) — đừng tưởng treo.</sub>
 
 ### A5. ai-service (Python — khởi động RIÊNG, không phải Maven)
 ```bash
@@ -232,20 +239,54 @@ cd frontend && npm install && npm run dev   # http://localhost:5173
   docker exec -it postgres-ai psql -U postgres -d ai_db \
     -c "SELECT model, prompt_version, decision, latency_ms, created_at FROM agent_run_log ORDER BY created_at DESC LIMIT 5;"
   ```
-  → thấy `model=qwen2.5:3b` (chat model Ollama đang chạy), `prompt_version=day6-hardened-v1`, `decision`,
+  → thấy `model=gemini-3.6-flash` (chat model đang cấu hình), `prompt_version=day6-hardened-v1`, `decision`,
   `latency_ms`. **SĐT trong log đã bị mask** (`********67`) — kiểm chứng PII posture.
+
+### E1b. Soi 1 request đi qua từng node — LangSmith
+
+Bật trong `.env` gốc: `LANGSMITH_TRACING=true` + `LANGSMITH_API_KEY` (key free tại https://smith.langchain.com).
+Boot ai-service phải thấy log `langsmith.enabled` (WARNING). Thấy `langsmith.missing_api_key` (ERROR) = thiếu key,
+và tracing **tắt hẳn** chứ không bật nửa vời. Mỗi lượt chat = 1 trace tên **`assistant-turn`**, lọc bằng tag
+`session:<sessionId>`, trong project `badmintonhub-ai`. Cây trace đọc như sau:
+
+```
+assistant-turn                        ← root: inputs = messages/session_id/user_id/jwt
+├─ route                              CODE tất định
+├─ route_decision                     outputs.output = "booking" | "knowledge"   ← nhánh rẽ đã chọn
+├─ perceive                           outputs = {intent, stage}  ← state delta node trả về
+│  ├─ vi_parse.date                   in {text, today} → out '2026-08-14'   ┐ CODE quyết
+│  ├─ vi_parse.time_window            → ['18:00:00','20:00:00']             │ (chạy TRƯỚC LLM)
+│  ├─ vi_parse.budget                 → 200000                              │
+│  ├─ vi_parse.sport                  → 'PICKLEBALL'                        ┘
+│  └─ ChatGoogleGenerativeAI          prompt NGUYÊN VĂN + response + token + latency
+├─ memory_load                        gọi gateway (booking history) — không LLM
+├─ agent                              ReAct: ChatGoogleGenerativeAI ×N + tool calls
+├─ ranker.rank                        → option đề xuất + alternatives
+├─ human_review                       interrupt — dừng, chờ POST /confirm
+└─ guardrail.check_*                  5 cổng tiền, mỗi cổng 1 run (None = pass)
+```
+
+🔑 **Vì sao có mấy dòng `vi_parse.*` / `ranker.rank` / `guardrail.check_*`**: mặc định LangSmith chỉ ghi
+**state vào/ra của cả node**, không ghi các bước bên trong. Với `perceive` thì đó là điểm mù nguy hiểm —
+bạn thấy `intent.date` cuối cùng nhưng **không thấy CODE đã ghi đè giá trị LLM trả về**
+(`nodes.py`: `if det_date is not None: parsed.date = det_date`). Các hàm đó được đánh dấu `@traceable`
+nên hiện thành **child run riêng**, cho phép đối chiếu trực tiếp: CODE nói gì · LLM nói gì · node xuất ra gì.
+Tắt tracing thì `@traceable` là no-op, không tốn gì.
+
+> ⚠️ Trace mang **nguyên văn hội thoại** (tên/SĐT) lên cloud LangSmith — dev/demo thôi.
+> `GO_LIVE_CHECKLIST §4b` có cổng `grep` chặn cờ này trước go-live.
 
 ### E2. Dọn dẹp
 - Widget: đóng bong bóng. Xoá phiên: `localStorage.removeItem('bh-ai-session:<userId>')` (Console) hoặc chờ TTL 24h.
 - Booking hold thử nghiệm sẽ tự **EXPIRED sau 10'** (hoặc huỷ ở `/admin`). Tắt service khi xong; giữ docker infra.
 
 ### E3. Cổng go-live (GO_LIVE_CHECKLIST §7 — 3 ô user tự tick)
-- [ ] `RUN_LIVE_EVAL=1 uv run pytest -m live -s` (scorecard thesis — chạy qua LLM cấu hình; Ollama thì không tốn quota).
-- [ ] Đi tay 8 UC ở Mục C (đã restart booking-service :3003 · **Ollama UP + đã `pull qwen2.5:3b`**).
-- [ ] `.env`: `LLM_PROVIDER=ollama` (chat) · `GEMINI_API_KEY` thật (**chỉ cho RAG embeddings**).
-> **Demo/thesis = GO** sau 3 ô trên (dữ liệu của bạn/synthetic, **không public**). Chat chạy **Ollama local** nên
-> PII hội thoại **không rời máy** → phần no-train của chat **đã đạt**. Điều kiện duy nhất còn lại để mở **public
-> thật** = localize luôn **RAG embeddings** (hiện query vẫn embed qua Gemini) — hoặc dùng Gemini billing (no-train).
+- [ ] `RUN_LIVE_EVAL=1 uv run pytest -m live -s` (scorecard thesis — chạy qua LLM cấu hình; ⚠️ ăn quota free tier).
+- [ ] Đi tay 8 UC ở Mục C (đã restart booking-service :3003 · `probe_llm.py` chạy OK).
+- [ ] `.env`: `LLM_PROVIDER=gemini` · `GEMINI_THINKING_LEVEL=low` · `GEMINI_API_KEY` thật (**chat + RAG**).
+> **Demo/thesis = GO** sau 3 ô trên (dữ liệu của bạn/synthetic, **không public, không PII người thật**). Free tier
+> = Google có thể train trên nội dung, và giờ **cả chat lẫn RAG** đều đi đường đó. Để mở **public thật**, chọn 1:
+> **Gemini billing** (no-train, đổi đúng 1 env) — hoặc `LLM_PROVIDER=ollama` + localize luôn RAG embeddings.
 
 ---
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import time
 from decimal import Decimal
 
+from langsmith import traceable
 from pydantic import BaseModel
 
 from app.assistant.models import BookingIntent, CourtOption, ProposedBooking
@@ -89,6 +90,7 @@ def _blocks_of_length(cells: list[AvailableSlot], n_cells: int) -> list[list[Ava
     return out
 
 
+@traceable(name="ranker.rank", run_type="chain")
 def rank(slots: list[AvailableSlot], intent: BookingIntent) -> RankResult:
     duration = _target_duration(intent)
     if not slots or not duration or duration <= 0:
