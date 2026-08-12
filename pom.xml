@@ -138,12 +138,25 @@
         </dependencies>
     </dependencyManagement>
 
-    <!-- Inherited by all child modules — loads .env file at Spring Boot startup -->
+    <!-- Inherited by all child modules -->
     <dependencies>
+        <!-- loads .env file at Spring Boot startup -->
         <dependency>
             <groupId>me.paulschwarz</groupId>
             <artifactId>spring-dotenv</artifactId>
             <version>${spring-dotenv.version}</version>
+        </dependency>
+
+        <!-- Backs /actuator/prometheus so kube-prometheus-stack can scrape (Day 7). runtime scope —
+             no code imports it; the registry is picked up by auto-configuration. The endpoint itself
+             is opened per-environment by MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE, not here.
+             Declared once on the parent rather than in eight service poms: CI treats pom.xml as the
+             `shared` filter, so either way all eight Java services rebuild — and one place cannot
+             drift out of step with itself. Version comes from spring-boot-starter-parent. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
         </dependency>
     </dependencies>
 

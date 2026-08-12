@@ -13,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -25,7 +26,9 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.UUID;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -39,6 +42,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * thing unique to the list endpoint vs. create/getById. It is the regression guard for that endpoint.</p>
  */
 @AutoConfigureMockMvc
+// Spring Boot disables every metrics exporter inside @SpringBootTest (it injects a "test" property
+// source setting management.defaults.metrics.export.enabled=false) so tests never push to a real
+// backend. Without opting back in, /actuator/prometheus has no handler at all and answers 500 via the
+// catch-all handler — a failure that says nothing about production. This annotation is what makes the
+// scrape test below exercise the thing it claims to test.
+@AutoConfigureObservability
 class BookingControllerIT extends AbstractKafkaIntegrationTest {
 
     @DynamicPropertySource
@@ -49,6 +58,10 @@ class BookingControllerIT extends AbstractKafkaIntegrationTest {
         r.add("eureka.client.enabled", () -> "false");
         r.add("eureka.client.register-with-eureka", () -> "false");
         r.add("eureka.client.fetch-registry", () -> "false");
+        // application.yml ships `health,info`; in the cluster the scrape endpoint is opened by
+        // MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE in the platform ConfigMap. Mirror it so the
+        // scrape test below runs against the same shape production does.
+        r.add("management.endpoints.web.exposure.include", () -> "health,info,prometheus");
     }
 
     @MockBean CourtServiceClient courtServiceClient; // avoid resolving lb://court-service via Eureka
@@ -141,4 +154,22 @@ class BookingControllerIT extends AbstractKafkaIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("INVALID_PRINCIPAL"));
     }
+
+    /**
+     * Prometheus scrapes this endpoint with no credentials, so it has to answer 200 to an anonymous
+     * caller. Two independent things break that, and neither surfaces anywhere else: the endpoint not
+     * existing (micrometer-registry-prometheus absent from the classpath) and Spring Security rejecting
+     * it (the actuator matchers are literal paths, so /actuator/prometheus used to be a 403).
+     *
+     * <p>Asserting on the body rather than the status alone is the point: a 200 carrying no JVM metrics
+     * would mean the endpoint answered but no registry is wired, which reads as "working" on a dashboard
+     * that is quietly empty. Failing here costs a test run; failing in the cluster costs a running EKS.</p>
+     */
+    @Test
+    void prometheusEndpoint_anonymous_returns200WithMetrics() throws Exception {
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("jvm_memory_used_bytes")));
+    }
+
 }

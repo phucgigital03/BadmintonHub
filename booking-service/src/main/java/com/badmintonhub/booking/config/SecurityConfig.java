@@ -33,7 +33,11 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                        // These matchers are literal, not prefixes: /actuator/anything-else is a 403.
+                        // /actuator/prometheus therefore has to be listed by name for Prometheus to
+                        // scrape it. It stays cluster-internal — the Ingress only routes "/" to the
+                        // frontend and "/api" to the gateway, so it is never reachable from the ALB.
+                        .requestMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
