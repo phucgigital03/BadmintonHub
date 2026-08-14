@@ -56,6 +56,17 @@ jobs:
         with:
           # `shared` là YAML anchor: đụng vào common/pom/Dockerfile thì MỌI
           # service Java phải build lại, vì tất cả đều depend vào chúng.
+          #
+          # ⚠️ Bảng tra "sửa cái gì thì build mấy image" — hay bị đọc nhầm thành lỗi:
+          #   • 1 thư mục service           → 1 job Build
+          #   • pom.xml / Dockerfile / common* → 8 job (8 service Java; frontend KHÔNG
+          #                                     nằm trong filter của chúng)
+          #   • CHÍNH FILE NÀY (ci.yml)     → 9 job, vì nó nằm trong CẢ `shared` LẪN
+          #                                   `frontend` ⇒ sửa một dòng comment ở đây
+          #                                   cũng rebuild + đẩy ECR đủ 9 image và bump
+          #                                   9 file values. Không phải bug, nhưng đắt —
+          #                                   biết trước để khỏi đi truy path-filter.
+          # Số job Build phải khớp đúng số service đã chạm; lệch là dấu hiệu filter sai.
           filters: |
             shared: &shared
               - 'pom.xml'
