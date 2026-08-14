@@ -29,6 +29,13 @@ public class SlotDeadLetterMonitor {
     private final Counter deadLetters;
 
     public SlotDeadLetterMonitor(MeterRegistry meterRegistry) {
+        // Register HERE, in the constructor — do not move this into record(). The series must exist at 0
+        // BEFORE the first dead letter, because the alert is increase(court_slot_deadletter_total[5m]) > 0:
+        // a counter born on the first message appears already at 1, leaving no step for increase() to see,
+        // so the very first dead letter is silently missed — exactly when one slot is stuck.
+        // booking-service and payment-service both had this bug: needing .tag("topic", …) pushed their
+        // register() call inside the handler. Measured on a live cluster 2026-08-13: msg #1 → no alert,
+        // msgs #2+#3 → "2 messages". Locked by counter_registeredAtZero_beforeAnyDeadLetter.
         this.deadLetters = Counter.builder("court.slot.deadletter.total")
                 .description("booking.slot.changed events dead-lettered after retries — a slot hold/release "
                         + "that never applied (slot may be stuck; needs manual replay)")
