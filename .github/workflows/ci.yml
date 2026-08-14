@@ -414,13 +414,29 @@ jobs:
   # Bước dễ hỏng IM LẶNG nhất cả pipeline: ghi sai tên file thì job vẫn xanh,
   # commit vẫn vào repo gitops, mà ArgoCD không đọc → không deploy gì và không
   # có lỗi ở đâu cả.
+  #
+  # 🔴 `always()` BẮT BUỘC, đừng bỏ. Không có nó, GitHub bọc điều kiện dưới bằng
+  # `success()` ngầm, và trạng thái *skipped* lan XUYÊN QUA `ci_gate` (job đó vẫn
+  # chạy nhờ `always()` của chính nó) xuống tới đây. Hậu quả: PR chỉ chạm thư mục
+  # service → `validate_others` skip → job này skip theo, dù `changes`/`build`/
+  # `ci_gate` đều success. Tức là build xong, ĐẨY ECR xong, CI xanh toàn bộ, mà
+  # KHÔNG BAO GIỜ deploy và không có lỗi ở đâu cả — đúng kiểu thay đổi thường gặp
+  # nhất. Đo thật 2026-08-14: 5/5 lần push, job này chạy khi và chỉ khi
+  # `validate_others` chạy, dù `validate_others` không hề nằm trong `needs`.
+  # Đối chứng ngay trong file: `notify` cũng needs `bump`, `bump` skip mà `notify`
+  # vẫn chạy — vì nó có `always()`.
+  # `always()` chỉ tắt lối tắt đó; tính đúng đắn do 2 dòng `result ==` bên dưới
+  # giữ (cùng khuôn `ci_gate` đang dùng). PR docs-only vẫn skip đúng, vì lúc đó
+  # `needs.build.result` là `skipped`.
   bump:
     name: Bump tag staging (repo gitops)
     needs: [changes, build, ci_gate]
     if: >
+      always() &&
       github.event_name == 'push' &&
       needs.changes.outputs.services != '[]' &&
-      needs.build.result == 'success'
+      needs.build.result == 'success' &&
+      needs.ci_gate.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
