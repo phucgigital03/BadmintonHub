@@ -11,7 +11,7 @@
 > `UC-CS-*` (tài liệu này) = chat với **AI đặt sân** (REST/SSE, ai-service). **Frontend tách 2 UI riêng.**
 > AI có thể **escalate → chat-service** khi vượt khả năng.
 
-> Stack: **Python · FastAPI · LangGraph · Pydantic v2 · LLM provider-agnostic (chat mặc định = Ollama local `qwen2.5:3b`) · MCP**.
+> Stack: **Python · FastAPI · LangGraph · Pydantic v2 · LLM provider-agnostic (chat mặc định = Gemini `gemini-3.6-flash`) · MCP**.
 > Đọc kỹ **§12 Kỷ luật phạm vi** trước khi thiết kế. Chạy **plan mode** trước khi code (theo **§14**).
 
 ---
@@ -40,7 +40,7 @@
 | **Mức tự chủ** | **Concierge tới giữ chỗ + màn QR** | Agent đề xuất → khách xác nhận → tạo hold → mở QR. **Tiền (chuyển khoản+proof+STAFF confirm) 100% ở luồng cũ.** |
 | **Đóng gói tool** | **MCP-ready ngay** (MCP server) | Tool định nghĩa 1 lần; agent nội bộ dùng qua MCP adapter; agent ngoài (Claude Desktop / Google Calendar agent) tái dùng sau. |
 | **Orchestration** | **LangGraph** 1 agent ReAct + checkpointer + human-in-the-loop interrupt | State machine tường minh, dừng chờ người ở bước tiền, tái lập/audit từng run. |
-| **LLM (chat)** | **Ollama local `qwen2.5:3b`** mặc định (chạy trên máy, PII không rời máy), **provider-agnostic** qua `.env` | Đọc tiếng Việt tốt, structured output, `temperature=0`. Đổi Gemini/OpenAI/Anthropic không sửa code lõi. **RAG embeddings vẫn Gemini** (§6). |
+| **LLM (chat)** | **Gemini `gemini-3.6-flash`** mặc định (free tier), **provider-agnostic** qua `.env` | Đọc tiếng Việt tốt, structured output, `temperature=0`, `thinking_level=low` (mặc định SDK là `high` — chậm + tốn token vô ích). Đổi Ollama/OpenAI không sửa code lõi. **RAG embeddings cùng provider** (§6). |
 | **Memory** | 4 lớp: checkpointer (session) · SQL `user_preferences`+lịch sử (long-term structured) · pgvector (knowledge/semantic) | Giữ context phiên + cá nhân hoá + hỏi-đáp kiến thức. **Dữ liệu đặt sân KHÔNG embed** — tool-query live (§6). |
 | **Kiến thức (RAG)** | **pgvector trên `ai_db`** (extension, không thêm service) — corpus FAQ/policy curated | Hỏi-đáp chính sách/tiện ích (UC-CS-08). **KHÔNG Pinecone/Weaviate** (kỷ luật Free-Tier). |
 | **Escalate** | Nút → mở `chat-service` (STAFF) với summary (**FE-driven**) | Agent biết giới hạn, chuyển người thật khi cần. |
@@ -69,7 +69,7 @@
 | Năng lực | Trong dự án này là gì | Component / Tech cụ thể |
 |---|---|---|
 | **1. Perception** (nhận thức) | Nhận input chat của khách + "perceive" **dữ liệu real-time** của hệ (sân trống, giá theo khung giờ) | FastAPI `/messages` (SSE) · `perceive` node parse NN tiếng Việt → `BookingIntent` (ngày tương đối, khung giờ, ngân sách) · tool READ `get_day_grid` / `get_pricing` (giá·trạng thái ô 30' live từ court-service) |
-| **2. Planning / Reasoning** ("não") | Biến yêu cầu mơ hồ → tiêu chí cụ thể · lên kế hoạch truy vấn · so sánh · đề xuất thay thế khi hết chỗ | **LangGraph ReAct agent** (LLM cấu hình — mặc định Ollama `qwen2.5:3b`, `temperature=0`) · slot-filling · `ranker` xếp hạng option · nhánh UC-CS-04 |
+| **2. Planning / Reasoning** ("não") | Biến yêu cầu mơ hồ → tiêu chí cụ thể · lên kế hoạch truy vấn · so sánh · đề xuất thay thế khi hết chỗ | **LangGraph ReAct agent** (LLM cấu hình — mặc định Gemini `gemini-3.6-flash`, `temperature=0`) · slot-filling · `ranker` xếp hạng option · nhánh UC-CS-04 |
 | **3. Memory / Statefulness** | Nhớ lịch sử (sân/giờ/bạn chơi quen) để cá nhân hoá + giữ context trong phiên (*"đổi qua 19h"*) | **4 lớp** (§6): checkpointer (session · thread_id=sessionId) · SQL `user_preferences`+`get_user_bookings` (long-term structured) · **pgvector** cho kiến thức/RAG (UC-CS-08). Dữ liệu đặt sân = tool-query live, KHÔNG embed |
 | **4. Autonomous decision-making** | Tự chọn "sân tốt nhất" · tự xử lý conflict · **có ngưỡng dừng hỏi người trước bước tiền** | `ranker` + `guardrail` node tất định · **`human_review` interrupt** trước `create_booking_hold` · budget/RBAC gate (§7) |
 | **5. Action / Tool use** | Gọi API hệ đặt sân: kiểm tra lịch, giữ chỗ, khởi tạo thanh toán · tra kiến thức (RAG) · tích hợp MCP để **dùng chung tool** với agent khác | **8 tool = MCP server** (FastMCP) wrapper quanh court/booking/payment + `search_knowledge` · forward JWT · agent nội bộ dùng `langchain-mcp-adapters` · mở cho Google Calendar agent (§5) |
@@ -88,7 +88,7 @@ graph TD
     U2["FE · Widget hỗ trợ STAFF · STOMP (UC-CHAT-*)"]
     GW["api-gateway :3000 · /api/ai/** · JWT verify"]
     AI["ai-service :3010 Python · LangGraph agent + checkpointer"]
-    LLM["LLM chat · Ollama qwen2.5:3b local · provider-agnostic qua .env"]
+    LLM["LLM chat · Gemini gemini-3.6-flash · provider-agnostic qua .env"]
     MCP["MCP tool server FastMCP · 8 tool · forward JWT user"]
     SVC["court · booking · payment · API đã hardening"]
     DB[("ai_db Postgres · checkpoint · memory · pgvector KB · agent_run_log")]
@@ -114,7 +114,7 @@ graph TD
 | **FE · Widget AI** (`@stomp` KHÔNG dùng ở đây) | Chat với agent qua **REST + SSE** (token streaming). Render card option sân + summary + nút "Xác nhận đặt" / "Gặp nhân viên". **UI riêng, tách widget STAFF.** |
 | **api-gateway** | `/api/ai/**` → `lb://ai-service` (route **đã có**). Verify JWT như mọi request. |
 | **ai-service (LangGraph)** | Chạy graph: perceive → reason → tool → propose → interrupt → hold → payment. Giữ state qua checkpointer. |
-| **LLM chat (Ollama `qwen2.5:3b` local)** | "Não" suy luận + trích xuất intent + xếp hạng ngôn ngữ. `temperature=0`. Provider-agnostic — đổi Gemini/OpenAI qua `.env`. |
+| **LLM chat (Gemini `gemini-3.6-flash`)** | "Não" suy luận + trích xuất intent + xếp hạng ngôn ngữ. `temperature=0`. Provider-agnostic — đổi Ollama/OpenAI qua `.env`. |
 | **MCP tool server** | 8 tool (READ/WRITE) wrapper quanh API thật + `search_knowledge` (RAG), **forward JWT user**. Agent nội bộ + agent ngoài dùng chung. |
 | **court / booking / payment** | **Nguồn sự thật + nơi ghi tiền.** Agent chỉ gọi qua gateway, mọi hardening giữ nguyên. |
 | **ai_db (Postgres)** | Checkpoint session · `user_preferences` · **`pgvector` corpus kiến thức** · `agent_run_log` (audit). Chung DB với verification_log (khác bảng). |
@@ -234,7 +234,7 @@ graph TD
 - **`knowledge`** — gọi `search_knowledge` (RAG pgvector) → trả lời **trích nguồn**; ngoài corpus → không bịa, mời escalate.
 - **`memory_load`** — nạp `user_preferences` + `get_user_bookings` → gợi ý tiêu chí trống.
 - **`ask_clarify`** — thiếu tiêu chí bắt buộc → hỏi, KHÔNG bịa (chống hallucination).
-- **`agent`** — ReAct (LLM cấu hình — mặc định Ollama `qwen2.5:3b`, temp=0), được trang bị tool READ; tự lập kế hoạch truy vấn.
+- **`agent`** — ReAct (LLM cấu hình — mặc định Gemini `gemini-3.6-flash`, temp=0), được trang bị tool READ; tự lập kế hoạch truy vấn.
 - **`tools`** — thực thi tool (MCP), forward JWT.
 - **`rank + propose`** — CODE xếp hạng `CourtOption` theo tiêu chí; hết chỗ → đề xuất thay thế (UC-CS-04).
 - **`human_review`** — **`interrupt`**: dừng, trả đề xuất cho UI. Resume = khách bấm.
@@ -368,7 +368,7 @@ Ba luật chọn cơ chế truy xuất — áp sai là mất tiền / sai UX:
 |---|---|---|
 | **Web / API** | FastAPI + Uvicorn/Gunicorn · **sse-starlette** | REST + **SSE streaming** token cho widget |
 | **Agent orchestration** | **LangGraph** + `langgraph-checkpoint-postgres` | Graph · human-in-the-loop `interrupt` · checkpoint session |
-| **LLM (chat)** | `langchain-ollama` (**Ollama `qwen2.5:3b` local**, mặc định) · `langchain-google-genai`/`openai` (tùy chọn) — provider-agnostic qua `.env` | "Não" reasoning + structured output |
+| **LLM (chat)** | `langchain-google-genai` (**Gemini `gemini-3.6-flash`**, mặc định) · `langchain-ollama`/`openai` (tùy chọn) — provider-agnostic qua `.env` | "Não" reasoning + structured output |
 | **Schema** | **Pydantic v2** + `pydantic-settings` | Structured output (KHÔNG parse JSON tay) + config + DTO |
 | **Tools / MCP** | **FastMCP** + `langchain-mcp-adapters` | Tool = MCP server, agent nội bộ + ngoài dùng chung |
 | **HTTP** | **httpx** (async) | Gọi court/booking/payment qua gateway, forward JWT |
@@ -468,7 +468,7 @@ customer_name, customer_phone, hold_minutes=10, summary) · `ConfirmDecision` (c
   làm tin đầu. **KHÔNG** để ai-service gọi chat-service backend (tránh coupling + auth chéo).
 
 ### 11.6 Privacy provider (PII qua LLM)
-- Agent xử lý PII (SĐT · ý định đặt). **Chat hiện chạy Ollama local `qwen2.5:3b`** → PII hội thoại **không rời máy**
+- Agent xử lý PII (SĐT · ý định đặt). **Chat hiện chạy Gemini `gemini-3.6-flash` free tier** → PII hội thoại **đi ra Google, và free tier có thể được dùng để train** ⇒ chỉ demo, không PII người thật. No-train = key billing hoặc `LLM_PROVIDER=ollama`
   (đạt no-train cho chat). Thay thế cloud no-train = Gemini billing (cam kết không-train). ⚠️ **Đường PII dư còn lại =
   câu hỏi RAG embed qua Gemini** (`gemini-embedding-001`) — muốn tuyệt đối thì localize luôn embedder.
   Mask PII trong log/trace; retention transcript có hạn.

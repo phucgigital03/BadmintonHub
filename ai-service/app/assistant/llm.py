@@ -1,6 +1,6 @@
 """Provider-agnostic chat model factory (§8.1).
 
-Default: Gemini 3.5 Flash, temperature=0 (stable, reproducible reasoning/tool-planning).
+Default: Gemini 3.6 Flash, temperature=0 (stable, reproducible reasoning/tool-planning).
 Pinned to one generation on purpose — reproducibility matters for a money-facing concierge,
 and the Day-7 red-team eval must run against a FIXED model (a moving `-latest` alias could
 shift under us between eval and production). When Google deprecates it (as it did the spec's
@@ -15,7 +15,7 @@ from typing import Any
 
 from app.config import get_settings
 
-GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
 
 
 def model_label(settings=None) -> str:
@@ -44,6 +44,14 @@ def get_chat_model() -> Any:
             model=GEMINI_MODEL,
             temperature=0,
             google_api_key=settings.gemini_api_key,
+            # 🔴 MUST stay explicit. Gemini 3+ defaults thinking_level to "high" when unset
+            # (langchain_google_genai/chat_models.py — "For Gemini 3+, this defaults to 'high'"),
+            # i.e. maximum reasoning depth on EVERY call. Our two call sites don't need it:
+            # `perceive` extracts fields from one sentence and `agent` plans READ tool calls.
+            # Left at the default it burns thinking tokens against the free-tier quota and adds
+            # latency under the hard 25s asyncio.wait_for cap — which is exactly how a turn dies
+            # as a bare ReadTimeout with an empty message. Tune via GEMINI_THINKING_LEVEL.
+            thinking_level=settings.gemini_thinking_level,
             # Surface the REAL failure instead of a bare, message-less TimeoutError: give the
             # client its own request timeout and cap silent retries so a 429/network/key error
             # propagates fast (and gets logged by perceive.llm_parse_failed) rather than being

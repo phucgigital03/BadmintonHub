@@ -4,11 +4,12 @@ AI booking concierge (`../usecase/UC_AI_Service_CustomerSupport.md`). This is th
 every §15 acceptance item to runnable evidence, records the eval + red-team scorecards, states the
 provider/PII posture, and defines the runtime e2e to walk before opening to anyone.
 
-**Posture for THIS project = DEMO / thesis.** The chat model now runs on a **local Ollama** model
-(`qwen2.5:3b`), so conversation PII never leaves the machine — the no-train condition is already met
-for chat. The one residual external path is **RAG embeddings**, which still call Gemini
-(`gemini-embedding-001`) — see *Provider posture*. Go-live is approved at demo level under the
-explicit constraints below.
+**Posture for THIS project = DEMO / thesis.** The chat model is **Gemini `gemini-3.6-flash` on the
+FREE tier**, so conversation content (incl. PII) goes to Google **and free-tier content may be used
+to improve their products** — the no-train condition is NOT met on this setting. RAG embeddings
+(`gemini-embedding-001`) take the same path. Two ways to get no-train back, both env-only: a Gemini
+**billing** key, or `LLM_PROVIDER=ollama` (chat stays on the machine). See *Provider posture*.
+Go-live is approved at demo level only, under the explicit constraints below.
 
 ---
 
@@ -43,7 +44,7 @@ RUN_LIVE_EVAL=1 uv run pytest -m live -s
 | 8 | Statefulness: "đổi qua 19h" giữ context | `test_graph::test_loopback_merges_prior_intent` · `test_intent_merge` · `BookingIntent.merge` | ✅ |
 | 9 | Cá nhân hoá theo lịch sử | `test_uc_cs_06` · `test_preferences` · `nodes.memory_load` + `preferences.derive_from_bookings` | ✅ |
 | 10 | Escalate → mở STAFF kèm context | `test_uc_cs_07` · `test_assistant_api::test_escalate_returns_summary_only` | ✅ |
-| 11 | `agent_run_log` snapshot (+model/prompt ver) · secrets env · test+eval xanh | `test_audit` (model = configured LLM, hiện `qwen2.5:3b`; prompt=`day6-hardened-v1`) · migration `0003` · `config.jwt_secret` fail-fast · 161 passed | ✅ |
+| 11 | `agent_run_log` snapshot (+model/prompt ver) · secrets env · test+eval xanh | `test_audit` (model = configured LLM, hiện `gemini-3.6-flash`; prompt=`day6-hardened-v1`) · migration `0003` · `config.jwt_secret` fail-fast · 161 passed | ✅ |
 | 12 | MCP: tool chạy qua MCP server | `test_mcp_server` (list_tools = 8) · `tools/mcp_server.py` | ✅ |
 | 13 | RAG (UC-CS-08): trích nguồn; ngoài corpus → không bịa | `test_uc_cs_08` · `test_knowledge` · `nodes.compose_knowledge_turn` (floor `rag_min_score=0.68`) | ✅ |
 | 14 | Chống injection → red-team eval xanh | `test_redteam` (15/15, 6 categories) · `test_injection` · `prompts.wrap_user_text`/`_INJECTION_GUARD` | ✅ |
@@ -68,8 +69,8 @@ without the model tests exactly what §15 cares about. The LLM-only fields (impl
 size) are measured by the live run below.
 
 **LIVE (optional):** `RUN_LIVE_EVAL=1 uv run pytest -m live -s` re-runs the intent corpus through the
-**configured LLM** (`LLM_PROVIDER` — local Ollama `qwen2.5:3b` or Gemini; deterministic slice must
-stay 100%) + scores fuzzy-field inference + confirms an injected "unlimited budget" never survives
+**configured LLM** (`LLM_PROVIDER` — Gemini `gemini-3.6-flash` or local Ollama; deterministic slice
+must stay 100%) + scores fuzzy-field inference + confirms an injected "unlimited budget" never survives
 the schema. Paste that scorecard into the thesis.
 
 ## 3. Red-team scorecard (MANDATORY — must be 100%)
@@ -96,21 +97,28 @@ interrupt gate it.
 ## 4. Provider posture (PII through the LLM)
 
 The concierge sends PII (phone, booking intent) through the model. **Current setup =
-`LLM_PROVIDER=ollama`** → the chat model `qwen2.5:3b` runs locally (`app/assistant/llm.py`, `ChatOllama`
-at `OLLAMA_BASE_URL`), so **conversation PII never leaves the machine** — the no-train condition is met
-for chat with no external API at all.
+`LLM_PROVIDER=gemini`** → chat runs on **`gemini-3.6-flash`** (`app/assistant/llm.py`), i.e. an external
+API. On the **free tier Google may use the content to improve its products**, so this setting is
+**DEMO-only** — it does NOT satisfy no-train.
 
-- **Chat (done):** local Ollama `qwen2.5:3b`. Provider-agnostic — the same `get_chat_model` also has a
-  `gemini` branch (a **BILLING** key = no-train cloud alternative) and an `openai` branch; switch via `.env`.
-- **⚠️ RAG embeddings (residual external path):** UC-CS-08 still embeds the user's query through Gemini
-  `models/gemini-embedding-001` (`app/assistant/embeddings.py`) → **`GEMINI_API_KEY` is still required, but
-  only for RAG**. For a fully no-external-PII posture, localize the embedder too (e.g. an Ollama
-  `nomic-embed-text` @768, re-seed `kb_chunks`) — a follow-up code change, out of scope here.
+- **Chat (current):** Gemini `gemini-3.6-flash`, free tier. Chosen because it is the strongest free
+  model that keeps both hard requirements (`with_structured_output` + `bind_tools`) and the best
+  Vietnamese, at **zero extra key** — `GEMINI_API_KEY` was already mandatory for RAG.
+  🔴 `thinking_level` is pinned (`GEMINI_THINKING_LEVEL`, default `low`): Gemini 3+ defaults it to
+  **high**, which burns thinking tokens and latency against the 25s cap for two tasks that don't
+  need deep reasoning. Measured on this corpus: `low` 3.6s vs `high` 5.9s, identical extraction.
+- **RAG embeddings:** same provider — `models/gemini-embedding-001` (`app/assistant/embeddings.py`).
+- **Getting no-train back (env-only, both branches kept in `get_chat_model`):** a Gemini **billing**
+  key (Google does not train on paid API data), or `LLM_PROVIDER=ollama` → `qwen2.5:3b` runs locally
+  and conversation PII never leaves the machine (needs Ollama up + `ollama pull qwen2.5:3b`).
+  For a fully no-external-PII posture also localize the embedder (e.g. `nomic-embed-text` @768 +
+  re-seed `kb_chunks`) — a follow-up code change, out of scope here.
 - **DEMO / thesis (this project):** acceptable with **no real-user PII** (your own / synthetic data),
   **not open to the public**, secrets via env (never commit a key).
 
-Config: `.env` `LLM_PROVIDER` / `OLLAMA_MODEL` / `OLLAMA_BASE_URL` (chat) · `GEMINI_API_KEY` (RAG only).
-The active model (`qwen2.5:3b`) is snapshotted into every `agent_run_log` row for reproducibility.
+Config: `.env` `LLM_PROVIDER` / `GEMINI_API_KEY` / `GEMINI_THINKING_LEVEL` (chat + RAG) ·
+`OLLAMA_MODEL` / `OLLAMA_BASE_URL` (only when provider=ollama).
+The active model is snapshotted into every `agent_run_log` row (via `model_label()`) for reproducibility.
 
 ### 4b. Two dev switches that BREAK this posture — both must be `false` before go-live
 
@@ -154,11 +162,15 @@ docker compose up -d                                  # postgres-ai (pgvector), 
 instance was the Day-4 `GET /api/bookings` 500 (see CLAUDE.md). Verify with a real login token:
 `GET /api/bookings` → 200.
 
-**Start the local chat model (Ollama) first:**
+**Chat model — nothing to start.** `LLM_PROVIDER=gemini` calls the API directly; just make sure
+`GEMINI_API_KEY` is set. Sanity-check the model end to end before walking the UCs (prints the exact
+prompt `perceive` sends, then calls for real without the 25s wrapper, so a real error/latency shows):
 ```bash
-ollama serve &            # daemon on :11434 (skip if the Ollama app already runs it)
-ollama pull qwen2.5:3b    # one-time (~2GB); on an M1/8GB the FIRST reply loads the model → a few seconds
+uv run python scripts/probe_llm.py "tối thứ 6 pickleball 18-20h dưới 200k"
+# expect OK in ~3-4s → date = next Friday · 18:00-20:00 · PICKLEBALL · budget 200000
 ```
+<sub>Only if you switched back to `LLM_PROVIDER=ollama`: `ollama serve &` then `ollama pull qwen2.5:3b`
+(one-time ~2GB; on an M1/8GB the FIRST reply loads the model → a few seconds).</sub>
 
 **Seed the AI DB + start ai-service:**
 ```bash
@@ -197,13 +209,15 @@ it stays paused, never books.
 - [x] §15 acceptance matrix — **16/16** mapped to passing evidence.
 - [x] Two parser gaps found by the eval harness and fixed (`6 giờ tối`→18:00 · `tối thứ 6 18-20h` · `khuyến mãi` ≠ tomorrow).
 - [ ] **(you)** One live eval run recorded: `RUN_LIVE_EVAL=1 uv run pytest -m live -s` (through the configured LLM).
-- [ ] **(you)** Runtime e2e walked once (8 UCs) — booking-service restarted first · **Ollama UP + `pull qwen2.5:3b`**.
-- [ ] **(you)** `.env`: `LLM_PROVIDER=ollama` (chat) · a real `GEMINI_API_KEY` (**RAG embeddings only**).
+- [ ] **(you)** Runtime e2e walked once (8 UCs) — booking-service restarted first · `probe_llm.py` OK.
+- [ ] **(you)** `.env`: `LLM_PROVIDER=gemini` · `GEMINI_THINKING_LEVEL=low` · a real `GEMINI_API_KEY`
+      (used by **both** chat and RAG embeddings now).
 
 **Decision — STOP here.** Everything programmable is green. Opening to users is a human call:
 
-- **Demo / thesis (approved):** local Ollama chat, your own/synthetic data, not public → GO after the
-  three `(you)` boxes above.
-- **Public / real users (NOT approved yet):** chat already runs on local Ollama (no-train met), but the
-  RAG query still embeds through Gemini — for real users either **localize the embedder too** or use a
-  no-train cloud (Gemini billing). That's the one residual PII path to close before going public.
+- **Demo / thesis (approved):** free-tier Gemini chat, your own/synthetic data, not public → GO after
+  the three `(you)` boxes above.
+- **Public / real users (NOT approved yet):** on the free tier Google may train on the content, and
+  **both** chat and RAG now take that path. Before going public pick one: **Gemini billing** (no-train,
+  one env change) or `LLM_PROVIDER=ollama` + a localized embedder (`nomic-embed-text` @768 + re-seed
+  `kb_chunks`). That is the PII path to close.

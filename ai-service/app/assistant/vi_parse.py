@@ -12,6 +12,15 @@ import unicodedata
 from datetime import date as date_
 from datetime import time, timedelta
 
+from langsmith import traceable
+
+# @traceable turns these pure helpers into CHILD RUNS nested under the `perceive` node in the
+# LangSmith trace, so you can see what CODE decided *separately* from what the LLM answered.
+# Without it the trace only shows perceive's final merged `intent` — and a deterministic override
+# silently replacing a correct LLM value (see nodes.perceive: `if det_date is not None`) is
+# invisible, which is exactly the class of bug that is hardest to find.
+# No-op when tracing is off: langsmith calls the function directly, so tests/prod pay nothing.
+
 # --- normalization ---------------------------------------------------------------
 
 
@@ -36,6 +45,7 @@ _WEEKDAYS: dict[str, int] = {
 }
 
 
+@traceable(name="vi_parse.date", run_type="parser")
 def resolve_relative_date(text: str, today: date_) -> date_ | None:
     """Resolve a Vietnamese relative-date phrase to an absolute date.
 
@@ -109,6 +119,7 @@ def _to_24h(hour: int, minute: int, period: str | None) -> time | None:
     return None
 
 
+@traceable(name="vi_parse.time_window", run_type="parser")
 def parse_time_window(text: str) -> tuple[time | None, time | None]:
     """Extract a start/end time window. Returns (from, to); either may be None.
 
@@ -145,6 +156,7 @@ def parse_time_window(text: str) -> tuple[time | None, time | None]:
 # --- budget ----------------------------------------------------------------------
 
 
+@traceable(name="vi_parse.budget", run_type="parser")
 def parse_budget(text: str) -> int | None:
     """Parse a VND budget: dưới 200k · 200k · 200 nghìn/ngàn · 200.000 · 1 triệu / 1tr / 1m.
 
@@ -198,6 +210,7 @@ _SPORTS: dict[str, str] = {
 }
 
 
+@traceable(name="vi_parse.sport", run_type="parser")
 def parse_sport(text: str) -> str | None:
     stripped = _strip_accents(text)
     for keyword, sport in _SPORTS.items():
